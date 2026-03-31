@@ -2,6 +2,10 @@ name = "icon-forge-worker"
 main = "src/index.ts"
 compatibility_date = "2024-12-18"
 
+routes = [
+  { pattern = "api-icon.weweekly.online/*", zone_name = "weweekly.online" }
+]
+
 [vars]
 ENVIRONMENT = "production"
 

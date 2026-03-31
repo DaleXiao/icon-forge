@@ -74,7 +74,7 @@ interface ErrorResponse {
 // --- Constants ---
 
 const DAILY_LIMIT = 3;
-const KIMI_MODEL = "kimi-k2.5";
+const KIMI_MODEL = "qwen-plus";
 const DASHSCOPE_MODEL = "qwen-image-2.0-pro";
 const DASHSCOPE_SUBMIT_URL =
   "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis";
@@ -88,18 +88,13 @@ const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
-const KIMI_SYSTEM_PROMPT = `You are an expert app icon designer. The user will give you a short description of an app (in any language, often Chinese). Your job is to analyze it and output a JSON object that describes the visual design of a macOS-style app icon.
+const KIMI_SYSTEM_PROMPT = `You are an expert app icon designer. Given a short app description (often Chinese), output ONLY valid JSON with exactly 4 fields:
+- "subject": English, what the squircle icon IS (the main visual metaphor/object)
+- "visualDetails": English, colors, layout, materials, element arrangement
+- "contrastColors": English, contrasting accent colors description
+- "moodWord": single English mood/style word
 
-Rules:
-1. Output ONLY valid JSON, no other text, no markdown code fences.
-2. The JSON must have exactly these 4 fields:
-   - "subject": A concise English description of what the squircle icon IS (the main visual metaphor/object). Example: "a cute cartoon deer wearing headphones, reading a book"
-   - "visualDetails": English description of colors, layout, materials, element arrangement. Example: "gradient from warm orange to golden yellow, the deer is centered, soft fabric texture, a small English alphabet 'A' floats nearby"
-   - "contrastColors": English description of contrasting accent colors. Example: "Deep teal accents against the warm orange background, white highlights on the book pages"
-   - "moodWord": A single English mood/style word. Example: "playful"
-3. Be creative and specific. Think about what visual metaphor best represents the app concept.
-4. Prioritize clarity at small sizes — avoid tiny intricate details.
-5. The icon should feel premium, toylike, and charming.`;
+Be creative and specific. Prioritize clarity at small sizes. The icon should feel premium, toylike, and charming.`;
 
 // --- Helper functions ---
 
