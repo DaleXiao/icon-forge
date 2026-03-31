@@ -232,62 +232,77 @@ async function synthesizePrompts(
 
 async function generateIcon(
   prompt: string,
-  apiKey: string
+  apiKey: string,
+  maxRetries: number = 3
 ): Promise<string> {
-  const response = await fetch(DASHSCOPE_SUBMIT_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: DASHSCOPE_MODEL,
-      input: {
-        messages: [
-          {
-            role: "user",
-            content: [{ text: prompt }],
-          },
-        ],
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const response = await fetch(DASHSCOPE_SUBMIT_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
       },
-      parameters: {
-        size: "1024*1024",
-        n: 1,
-        prompt_extend: false,
-        watermark: false,
-      },
-    }),
-  });
+      body: JSON.stringify({
+        model: DASHSCOPE_MODEL,
+        input: {
+          messages: [
+            {
+              role: "user",
+              content: [{ text: prompt }],
+            },
+          ],
+        },
+        parameters: {
+          size: "1024*1024",
+          n: 1,
+          prompt_extend: false,
+          watermark: false,
+        },
+      }),
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Dashscope error (${response.status}): ${errorText}`);
-  }
+    if (!response.ok) {
+      const errorText = await response.text();
+      // Retry on rate limit
+      if (response.status === 429 && attempt < maxRetries - 1) {
+        await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 3000));
+        continue;
+      }
+      throw new Error(`Dashscope error (${response.status}): ${errorText}`);
+    }
 
-  const data = (await response.json()) as {
-    output?: {
-      choices?: Array<{
-        message?: {
-          content?: Array<{ image?: string }>;
-        };
-      }>;
+    const data = (await response.json()) as {
+      output?: {
+        choices?: Array<{
+          message?: {
+            content?: Array<{ image?: string }>;
+          };
+        }>;
+      };
+      code?: string;
+      message?: string;
     };
-    code?: string;
-    message?: string;
-  };
 
-  if (data.code) {
-    throw new Error(`Dashscope API error: ${data.code} - ${data.message}`);
+    if (data.code) {
+      // Retry on throttling
+      if (data.code === "Throttling.RateQuota" && attempt < maxRetries - 1) {
+        await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 3000));
+        continue;
+      }
+      throw new Error(`Dashscope API error: ${data.code} - ${data.message}`);
+    }
+
+    const imageUrl = data.output?.choices?.[0]?.message?.content?.[0]?.image;
+    if (!imageUrl) {
+      throw new Error(
+        `Dashscope returned no image: ${JSON.stringify(data)}`
+      );
+    }
+
+    return imageUrl;
   }
 
-  const imageUrl = data.output?.choices?.[0]?.message?.content?.[0]?.image;
-  if (!imageUrl) {
-    throw new Error(
-      `Dashscope returned no image: ${JSON.stringify(data)}`
-    );
-  }
-
-  return imageUrl;
+  throw new Error("Dashscope image generation failed after retries");
 }
 
 // --- Request handlers ---
@@ -337,11 +352,9 @@ async function handleGenerate(
       env.DASHSCOPE_API_KEY
     );
 
-    // Step 2: Generate icons in parallel — each with its own unique prompt
-    const [iconUrl1, iconUrl2] = await Promise.all([
-      generateIcon(promptA, env.DASHSCOPE_API_KEY),
-      generateIcon(promptB, env.DASHSCOPE_API_KEY),
-    ]);
+    // Step 2: Generate icons sequentially to avoid rate limiting
+    const iconUrl1 = await generateIcon(promptA, env.DASHSCOPE_API_KEY);
+    const iconUrl2 = await generateIcon(promptB, env.DASHSCOPE_API_KEY);
 
     const response: GenerateSuccessResponse = {
       icons: [
