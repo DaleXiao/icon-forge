@@ -32,32 +32,7 @@ interface PromptComponents {
   moodWord: string;
 }
 
-// --- Dashscope API types ---
-
-interface DashscopeSubmitResponse {
-  output: {
-    task_status: string;
-    task_id: string;
-  };
-  request_id: string;
-}
-
-interface DashscopeTaskResponse {
-  output: {
-    task_status: string;
-    task_id: string;
-    results?: Array<{ url?: string; code?: string; message?: string }>;
-    task_metrics?: {
-      TOTAL: number;
-      SUCCEEDED: number;
-      FAILED: number;
-    };
-  };
-  request_id: string;
-  usage?: {
-    image_count: number;
-  };
-}
+// (Image generation uses the multimodal-generation sync API)
 
 // --- API response types ---
 
@@ -77,11 +52,8 @@ const DAILY_LIMIT = 3;
 const KIMI_MODEL = "kimi-k2.5";
 const DASHSCOPE_MODEL = "qwen-image-2.0-pro";
 const DASHSCOPE_SUBMIT_URL =
-  "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis";
+  "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
 const KIMI_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
-const POLL_INTERVAL_MS = 2000;
-const POLL_TIMEOUT_MS = 60000;
-
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
@@ -220,9 +192,9 @@ async function synthesizePrompt(
   return finalPrompt;
 }
 
-// --- Dashscope image generation ---
+// --- Image generation ---
 
-async function submitImageTask(
+async function generateIcon(
   prompt: string,
   apiKey: string
 ): Promise<string> {
@@ -231,16 +203,22 @@ async function submitImageTask(
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
-      "X-DashScope-Async": "enable",
     },
     body: JSON.stringify({
       model: DASHSCOPE_MODEL,
       input: {
-        prompt,
+        messages: [
+          {
+            role: "user",
+            content: [{ text: prompt }],
+          },
+        ],
       },
       parameters: {
         size: "1024*1024",
         n: 1,
+        prompt_extend: false,
+        watermark: false,
       },
     }),
   });
@@ -248,80 +226,33 @@ async function submitImageTask(
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(
-      `Dashscope submit error (${response.status}): ${errorText}`
+      `Dashscope error (${response.status}): ${errorText}`
     );
   }
 
-  const data = (await response.json()) as DashscopeSubmitResponse;
-  const taskId = data.output?.task_id;
+  const data = (await response.json()) as {
+    output?: {
+      choices?: Array<{
+        message?: {
+          content?: Array<{ image?: string }>;
+        };
+      }>;
+    };
+    code?: string;
+    message?: string;
+  };
 
-  if (!taskId) {
+  if (data.code) {
+    throw new Error(`Dashscope API error: ${data.code} - ${data.message}`);
+  }
+
+  const imageUrl = data.output?.choices?.[0]?.message?.content?.[0]?.image;
+  if (!imageUrl) {
     throw new Error(
-      `Dashscope did not return task_id: ${JSON.stringify(data)}`
+      `Dashscope returned no image: ${JSON.stringify(data)}`
     );
   }
 
-  return taskId;
-}
-
-async function pollTaskResult(
-  taskId: string,
-  apiKey: string
-): Promise<string> {
-  const pollUrl = `https://dashscope.aliyuncs.com/api/v1/tasks/${taskId}`;
-  const startTime = Date.now();
-
-  while (Date.now() - startTime < POLL_TIMEOUT_MS) {
-    const response = await fetch(pollUrl, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-      },
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(
-        `Dashscope poll error (${response.status}): ${errorText}`
-      );
-    }
-
-    const data = (await response.json()) as DashscopeTaskResponse;
-    const status = data.output?.task_status;
-
-    if (status === "SUCCEEDED") {
-      const results = data.output?.results;
-      if (!results || results.length === 0) {
-        throw new Error("Dashscope task succeeded but no results returned");
-      }
-      const url = results[0]?.url;
-      if (!url) {
-        throw new Error(
-          `Dashscope result has no URL: ${JSON.stringify(results[0])}`
-        );
-      }
-      return url;
-    }
-
-    if (status === "FAILED" || status === "CANCELED" || status === "UNKNOWN") {
-      throw new Error(
-        `Dashscope task ${status}: ${JSON.stringify(data.output)}`
-      );
-    }
-
-    // Still PENDING or RUNNING, wait and retry
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-  }
-
-  throw new Error(`Dashscope task timed out after ${POLL_TIMEOUT_MS}ms`);
-}
-
-async function generateIcon(
-  prompt: string,
-  apiKey: string
-): Promise<string> {
-  const taskId = await submitImageTask(prompt, apiKey);
-  const imageUrl = await pollTaskResult(taskId, apiKey);
   return imageUrl;
 }
 
