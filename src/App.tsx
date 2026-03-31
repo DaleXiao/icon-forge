@@ -144,24 +144,29 @@ export default function App() {
     }
   }
 
+  const canGenerate = description.trim().length >= 2 && !loading && !rateLimited
+
   return (
-    <div className="min-h-screen flex flex-col items-center px-4 py-12 sm:py-20">
+    <div className="min-h-screen flex flex-col items-center px-5 py-16 sm:py-24">
       {/* Header */}
-      <header className="text-center mb-10 sm:mb-14">
-        <h1 className="text-3xl sm:text-4xl font-bold text-white tracking-tight">
-          Icon Forge{' '}
-          <span className="inline-block" role="img" aria-label="hammer">
+      <header className="text-center mb-12 sm:mb-16 animate-fade-in">
+        <div className="inline-flex items-center gap-3 mb-4">
+          <span className="text-2xl" role="img" aria-label="forge">
             🔨
           </span>
+        </div>
+        <h1 className="text-3xl sm:text-4xl font-semibold text-warm-100 tracking-tight leading-tight">
+          Icon Forge
         </h1>
-        <p className="mt-3 text-neutral-400 text-base sm:text-lg">
-          macOS-style app icons, fast.
+        <p className="mt-2.5 text-warm-400 text-base sm:text-lg font-light tracking-wide">
+          描述你的 App，生成精美图标
         </p>
       </header>
 
       {/* Input Section */}
-      <div className="w-full max-w-xl">
-        <div className="flex gap-3">
+      <div className="w-full max-w-lg animate-slide-up">
+        {/* Input row */}
+        <div className="relative flex gap-2.5">
           <input
             type="text"
             value={description}
@@ -173,42 +178,42 @@ export default function App() {
             placeholder="描述你的 app..."
             maxLength={200}
             disabled={loading}
-            className="flex-1 bg-neutral-900 border border-neutral-700 rounded-xl px-4 py-3 text-white placeholder-neutral-500 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all disabled:opacity-50"
+            className="flex-1 bg-warm-900/80 border border-warm-700/40 rounded-2xl px-5 py-3.5 text-warm-100 placeholder-warm-500 text-base font-light tracking-wide focus-warm focus:border-accent-500/30 transition-colors disabled:opacity-50"
           />
           <button
             onClick={handleGenerate}
-            disabled={loading || rateLimited || !description.trim()}
-            className={`px-5 py-3 rounded-xl font-medium text-base transition-all whitespace-nowrap ${
-              loading
-                ? 'bg-indigo-600/50 text-indigo-200 cursor-wait pulse-glow'
+            disabled={!canGenerate}
+            className={`
+              px-5 py-3.5 rounded-2xl font-medium text-base transition-all whitespace-nowrap
+              ${loading
+                ? 'bg-accent-600/40 text-accent-200 cursor-wait warm-pulse'
                 : rateLimited
-                ? 'bg-neutral-700 text-neutral-500 cursor-not-allowed'
-                : 'bg-indigo-600 text-white hover:bg-indigo-500 active:scale-95 disabled:bg-neutral-700 disabled:text-neutral-500 disabled:cursor-not-allowed'
-            }`}
+                  ? 'bg-warm-800/60 text-warm-600 cursor-not-allowed'
+                  : canGenerate
+                    ? 'bg-accent-600 text-white hover:bg-accent-500 active:scale-[0.97] shadow-warm-md hover:shadow-warm-glow'
+                    : 'bg-warm-800/60 text-warm-600 cursor-not-allowed'
+              }
+            `}
           >
             {loading ? (
               <span className="flex items-center gap-2">
                 <LoadingSpinner />
-                生成中
+                <span>生成中</span>
               </span>
             ) : (
-              <span className="flex items-center gap-1.5">
-                <span>⚡</span>
-                <span>生成</span>
-              </span>
+              <span>生成</span>
             )}
           </button>
         </div>
 
         {/* Example prompts */}
-        <div className="mt-4 flex flex-wrap gap-2 justify-center">
-          <span className="text-neutral-500 text-sm">示例：</span>
+        <div className="mt-5 flex flex-wrap gap-2 justify-center stagger">
           {EXAMPLE_PROMPTS.map((prompt) => (
             <button
               key={prompt}
               onClick={() => handleExampleClick(prompt)}
               disabled={loading}
-              className="text-sm text-neutral-400 hover:text-indigo-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="example-pill text-sm text-warm-500 px-3 py-1.5 rounded-full border border-warm-800/50 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {prompt}
             </button>
@@ -217,20 +222,20 @@ export default function App() {
 
         {/* Error message */}
         {error && (
-          <div className="mt-4 text-center">
-            <p className="text-red-400 text-sm">{error}</p>
+          <div className="mt-5 text-center animate-fade-in">
+            <p className="text-coral-400 text-sm font-light">{error}</p>
           </div>
         )}
       </div>
 
       {/* Loading shimmer */}
       {loading && (
-        <div className="mt-10 sm:mt-14 w-full max-w-xl">
-          <div className="grid grid-cols-2 gap-4 sm:gap-6">
+        <div className="mt-12 sm:mt-16 w-full max-w-lg animate-fade-in">
+          <div className="grid grid-cols-2 gap-5 sm:gap-6">
             <ShimmerCard />
             <ShimmerCard />
           </div>
-          <p className="text-center text-neutral-500 text-sm mt-4">
+          <p className="text-center text-warm-600 text-sm font-light mt-5 tracking-wide">
             正在生成中，预计 10-15 秒...
           </p>
         </div>
@@ -238,8 +243,8 @@ export default function App() {
 
       {/* Results */}
       {!loading && icons.length > 0 && (
-        <div className="mt-10 sm:mt-14 w-full max-w-xl">
-          <div className="grid grid-cols-2 gap-4 sm:gap-6">
+        <div className="mt-12 sm:mt-16 w-full max-w-lg animate-slide-up">
+          <div className="grid grid-cols-2 gap-5 sm:gap-6 stagger">
             {icons.map((icon) => (
               <IconCard
                 key={icon.index}
@@ -253,15 +258,15 @@ export default function App() {
 
       {/* Quota display */}
       {remaining !== null && (
-        <div className="mt-8 text-center">
+        <div className="mt-10 text-center animate-fade-in">
           {rateLimited ? (
-            <p className="text-neutral-500 text-sm">
-              内测中，每日限额已用完，请明天再来 🙂
+            <p className="text-warm-600 text-sm font-light">
+              内测中，每日限额已用完，请明天再来
             </p>
           ) : (
-            <p className="text-neutral-500 text-sm">
+            <p className="text-warm-600 text-sm font-light tracking-wide">
               今日剩余{' '}
-              <span className="text-neutral-300 font-medium">
+              <span className="text-warm-400 font-medium tabular-nums">
                 {remaining}/{total}
               </span>{' '}
               次
@@ -271,9 +276,9 @@ export default function App() {
       )}
 
       {/* Footer */}
-      <footer className="mt-auto pt-16 pb-6">
-        <p className="text-neutral-600 text-xs">
-          &copy; 2026 weweekly.online
+      <footer className="mt-auto pt-20 pb-8">
+        <p className="text-warm-700 text-xs font-light tracking-wider">
+          weweekly.online
         </p>
       </footer>
     </div>
@@ -290,15 +295,15 @@ function LoadingSpinner() {
       fill="none"
     >
       <circle
-        className="opacity-25"
+        className="opacity-20"
         cx="12"
         cy="12"
         r="10"
         stroke="currentColor"
-        strokeWidth="4"
+        strokeWidth="3"
       />
       <path
-        className="opacity-75"
+        className="opacity-80"
         fill="currentColor"
         d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
       />
@@ -308,10 +313,10 @@ function LoadingSpinner() {
 
 function ShimmerCard() {
   return (
-    <div className="rounded-2xl overflow-hidden bg-neutral-900 border border-neutral-800">
+    <div className="rounded-2.5xl overflow-hidden bg-warm-900/60 border border-warm-800/30 shadow-card">
       <div className="aspect-square shimmer" />
-      <div className="p-3">
-        <div className="h-9 rounded-lg shimmer" />
+      <div className="p-4">
+        <div className="h-9 rounded-xl shimmer" />
       </div>
     </div>
   )
@@ -325,22 +330,24 @@ function IconCard({
   onDownload: (url: string, index: number) => void
 }) {
   return (
-    <div className="rounded-2xl overflow-hidden bg-neutral-900 border border-neutral-800 group transition-transform hover:scale-[1.02]">
-      <div className="aspect-square bg-neutral-950 p-4">
+    <div className="icon-card rounded-2.5xl overflow-hidden bg-warm-900/60 border border-warm-800/30 shadow-card animate-slide-up">
+      {/* Icon display area — generous padding, warm dark bg */}
+      <div className="aspect-square bg-warm-950 p-5">
         <img
           src={icon.url}
           alt={`Generated icon ${icon.index + 1}`}
-          className="w-full h-full object-contain rounded-xl"
+          className="w-full h-full object-contain rounded-2xl"
           loading="lazy"
         />
       </div>
-      <div className="p-3">
+      {/* Download — subtle, discoverable */}
+      <div className="px-4 py-3">
         <button
           onClick={() => onDownload(icon.url, icon.index)}
-          className="w-full py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-sm font-medium transition-colors flex items-center justify-center gap-1.5"
+          className="w-full py-2.5 rounded-xl bg-warm-850 hover:bg-warm-800 text-warm-400 hover:text-warm-300 text-sm font-medium transition-colors flex items-center justify-center gap-2 focus-warm"
         >
           <DownloadIcon />
-          下载 PNG
+          <span>下载 PNG</span>
         </button>
       </div>
     </div>
@@ -350,7 +357,7 @@ function IconCard({
 function DownloadIcon() {
   return (
     <svg
-      className="w-4 h-4"
+      className="w-3.5 h-3.5"
       fill="none"
       viewBox="0 0 24 24"
       stroke="currentColor"
