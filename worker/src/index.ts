@@ -74,7 +74,7 @@ interface ErrorResponse {
 // --- Constants ---
 
 const DAILY_LIMIT = 3;
-const KIMI_MODEL = "qwen-plus";
+const KIMI_MODEL = "kimi-k2.5";
 const DASHSCOPE_MODEL = "qwen-image-2.0-pro";
 const DASHSCOPE_SUBMIT_URL =
   "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis";
@@ -167,7 +167,6 @@ async function synthesizePrompt(
       { role: "system", content: KIMI_SYSTEM_PROMPT },
       { role: "user", content: description },
     ],
-    response_format: { type: "json_object" },
   };
 
   const response = await fetch(KIMI_API_URL, {
@@ -191,10 +190,14 @@ async function synthesizePrompt(
     throw new Error("Kimi API returned empty content");
   }
 
-  // Parse the JSON response
+  // Parse the JSON response — strip markdown code fences if present
   let components: PromptComponents;
   try {
-    components = JSON.parse(content) as PromptComponents;
+    let cleaned = content.trim();
+    if (cleaned.startsWith("```")) {
+      cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
+    }
+    components = JSON.parse(cleaned) as PromptComponents;
   } catch {
     throw new Error(`Failed to parse Kimi response as JSON: ${content}`);
   }
