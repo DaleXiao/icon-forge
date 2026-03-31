@@ -1,0 +1,14 @@
+name = "icon-forge-worker"
+main = "src/index.ts"
+compatibility_date = "2024-12-18"
+
+[vars]
+ENVIRONMENT = "production"
+
+[[kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "placeholder-kv-id"
+
+# Secrets (set via `wrangler secret put`):
+# - DASHSCOPE_API_KEY
+# - KIMI_API_KEY
