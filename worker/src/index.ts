@@ -390,10 +390,8 @@ async function handleGenerate(
     return jsonResponse(response, 200);
   } catch (error) {
     console.error("Generation failed:", error);
-    const message =
-      error instanceof Error ? error.message : "Unknown error occurred";
     return jsonResponse(
-      { error: "generation_failed", message: `生成失败，请重试：${message}` },
+      { error: "generation_failed", message: "生成失败，请稍后重试" },
       500
     );
   }
