@@ -128,9 +128,9 @@ function getTodayKey(ip: string): string {
   return `limit:${ip}:${today}`;
 }
 
-// --- Rate limiting ---
+// --- Rate limiting (check only, no increment) ---
 
-async function checkAndIncrementRateLimit(
+async function checkRateLimit(
   kv: KVNamespace,
   ip: string
 ): Promise<{ allowed: boolean; remaining: number }> {
@@ -142,9 +142,54 @@ async function checkAndIncrementRateLimit(
     return { allowed: false, remaining: 0 };
   }
 
+  return { allowed: true, remaining: DAILY_LIMIT - count };
+}
+
+async function incrementRateLimit(
+  kv: KVNamespace,
+  ip: string
+): Promise<number> {
+  const key = getTodayKey(ip);
+  const current = await kv.get(key);
+  const count = current ? parseInt(current, 10) : 0;
   const newCount = count + 1;
   await kv.put(key, newCount.toString(), { expirationTtl: 86400 });
-  return { allowed: true, remaining: DAILY_LIMIT - newCount };
+  return DAILY_LIMIT - newCount;
+}
+
+// --- Global generation queue (KV-based lock) ---
+
+async function acquireGenerationLock(
+  kv: KVNamespace,
+  maxWaitMs: number = 30000
+): Promise<boolean> {
+  const lockKey = "generation:lock";
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < maxWaitMs) {
+    const existing = await kv.get(lockKey);
+    if (!existing) {
+      // Try to acquire lock (TTL 120s as safety net)
+      await kv.put(lockKey, Date.now().toString(), { expirationTtl: 120 });
+      return true;
+    }
+
+    // Check if lock is stale (> 90s old)
+    const lockTime = parseInt(existing, 10);
+    if (Date.now() - lockTime > 90000) {
+      await kv.put(lockKey, Date.now().toString(), { expirationTtl: 120 });
+      return true;
+    }
+
+    // Wait and retry
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+
+  return false;
+}
+
+async function releaseGenerationLock(kv: KVNamespace): Promise<void> {
+  await kv.delete("generation:lock");
 }
 
 async function getRemainingQuota(
@@ -329,11 +374,9 @@ async function handleGenerate(
     );
   }
 
+  // Step 0: Check rate limit (without incrementing)
   const ip = getClientIP(request);
-  const { allowed, remaining } = await checkAndIncrementRateLimit(
-    env.RATE_LIMIT,
-    ip
-  );
+  const { allowed } = await checkRateLimit(env.RATE_LIMIT, ip);
 
   if (!allowed) {
     return jsonResponse(
@@ -345,16 +388,28 @@ async function handleGenerate(
     );
   }
 
+  // Step 1: Acquire generation lock (queue behind other requests)
+  const lockAcquired = await acquireGenerationLock(env.RATE_LIMIT);
+  if (!lockAcquired) {
+    return jsonResponse(
+      { error: "queue_full", message: "当前使用人数较多，请稍后再试" },
+      503
+    );
+  }
+
   try {
-    // Step 1: Kimi generates two distinct prompt variants
+    // Step 2: Kimi generates two distinct prompt variants
     const [promptA, promptB] = await synthesizePrompts(
       description,
       env.DASHSCOPE_API_KEY
     );
 
-    // Step 2: Generate icons sequentially to avoid rate limiting
+    // Step 3: Generate icons sequentially to avoid rate limiting
     const iconUrl1 = await generateIcon(promptA, env.DASHSCOPE_API_KEY);
     const iconUrl2 = await generateIcon(promptB, env.DASHSCOPE_API_KEY);
+
+    // Step 4: Only increment rate limit AFTER successful generation
+    const remaining = await incrementRateLimit(env.RATE_LIMIT, ip);
 
     const response: GenerateSuccessResponse = {
       icons: [
@@ -371,6 +426,9 @@ async function handleGenerate(
       { error: "generation_failed", message: "生成失败，请稍后重试" },
       500
     );
+  } finally {
+    // Always release lock
+    await releaseGenerationLock(env.RATE_LIMIT);
   }
 }
 
