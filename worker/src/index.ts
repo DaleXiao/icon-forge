@@ -4,7 +4,7 @@ export interface Env {
   ENVIRONMENT: string;
 }
 
-// --- Kimi API types ---
+// --- Types ---
 
 interface KimiMessage {
   role: "system" | "user" | "assistant";
@@ -25,16 +25,17 @@ interface KimiChatResponse {
   }>;
 }
 
-interface PromptComponents {
+interface PromptVariant {
   subject: string;
   visualDetails: string;
   contrastColors: string;
   moodWord: string;
 }
 
-// (Image generation uses the multimodal-generation sync API)
-
-// --- API response types ---
+interface PromptResponse {
+  variant_a: PromptVariant;
+  variant_b: PromptVariant;
+}
 
 interface GenerateSuccessResponse {
   icons: Array<{ url: string; index: number }>;
@@ -53,20 +54,51 @@ const KIMI_MODEL = "kimi-k2.5";
 const DASHSCOPE_MODEL = "qwen-image-2.0-pro";
 const DASHSCOPE_SUBMIT_URL =
   "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
-const KIMI_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
+const KIMI_API_URL =
+  "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
-const KIMI_SYSTEM_PROMPT = `You are an expert app icon designer. Given a short app description (often Chinese), output ONLY valid JSON with exactly 4 fields:
-- "subject": English, what the squircle icon IS (the main visual metaphor/object)
-- "visualDetails": English, colors, layout, materials, element arrangement
-- "contrastColors": English, contrasting accent colors description
-- "moodWord": single English mood/style word
+const KIMI_SYSTEM_PROMPT = `You are an elite macOS app icon designer. Given a short app description (any language), you produce TWO distinct visual concepts — each a complete, highly specific icon prompt.
 
-Be creative and specific. Prioritize clarity at small sizes. The icon should feel premium, toylike, and charming.`;
+Critical design principles:
+1. THE SQUIRCLE IS THE OBJECT — not "a squircle with X drawn on it", but "the squircle itself IS a vintage CRT monitor / a leather wallet / a terracotta pot". The entire icon shape becomes the physical object's front face.
+2. REAL MATERIALS — specify exact textures: brushed metal grain, cork natural texture, warm terracotta, rich leather, light wood. Never generic "colored background".
+3. SPECIFIC COLORS — use hex codes for key colors (e.g. deep charcoal #2D3436, vivid warm orange #FF7043, deep blue #1565C0). Every element needs a concrete color.
+4. TINY DELIGHTFUL DETAILS — a chrome latch, a small LED dot, a water droplet catching light, a blinking cursor, a snap button. One or two small details that reward close inspection.
+5. CLEAR VIEWPOINT — state exactly how we see the object: "viewed from above", "from the front", "viewed straight on".
+6. WORKS AT SMALL SIZES — bold shapes, high contrast between 2-3 main color areas. No tiny text, no intricate patterns.
+7. The two variants MUST use different visual metaphors / objects / color palettes. Not just minor tweaks — genuinely different creative directions.
+
+Examples of great icon concepts:
+- A CRT monitor with green glowing monospace text on dark screen, warm beige-grey plastic bezel
+- A metal toolbox (charcoal #2D3436 brushed surface), lid cracked open showing colorful tool heads peeking out
+- A cork bulletin board with a 4x4 grid of vivid push pins (some filled, some empty)
+- A wooden painter's palette viewed from above with vivid paint blobs and a slim brush
+- A terracotta flower pot from above, rich dark soil with bright green succulent
+- A leather card wallet, dark charcoal surface, colorful subscription cards peeking from top
+- An airplane window from inside — white plastic frame, oval opening, vivid blue sky with clouds, translucent shade pulled slightly down
+- A camera lens viewed straight on — deep charcoal outer ring, vivid deep blue glass element with highlight streak, tiny red recording LED
+- A desk microphone front grille — deep vivid blue with fine circular mesh, silver-white ring, warm gold center dot
+
+Output ONLY valid JSON:
+{
+  "variant_a": {
+    "subject": "what the squircle IS (the physical object/metaphor)",
+    "visualDetails": "specific colors (with hex), materials, layout, tiny details, viewpoint",
+    "contrastColors": "which colors pop against which",
+    "moodWord": "single mood/style word"
+  },
+  "variant_b": {
+    "subject": "a DIFFERENT physical object/metaphor",
+    "visualDetails": "different colors, materials, layout, details",
+    "contrastColors": "contrast description",
+    "moodWord": "single word"
+  }
+}`;
 
 // --- Helper functions ---
 
@@ -92,7 +124,7 @@ function getClientIP(request: Request): string {
 }
 
 function getTodayKey(ip: string): string {
-  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const today = new Date().toISOString().slice(0, 10);
   return `limit:${ip}:${today}`;
 }
 
@@ -111,9 +143,7 @@ async function checkAndIncrementRateLimit(
   }
 
   const newCount = count + 1;
-  // TTL of 24 hours (86400 seconds)
   await kv.put(key, newCount.toString(), { expirationTtl: 86400 });
-
   return { allowed: true, remaining: DAILY_LIMIT - newCount };
 }
 
@@ -127,12 +157,16 @@ async function getRemainingQuota(
   return Math.max(0, DAILY_LIMIT - count);
 }
 
-// --- Kimi prompt synthesis ---
+// --- Prompt synthesis (two variants) ---
 
-async function synthesizePrompt(
+function assemblePrompt(v: PromptVariant): string {
+  return `A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS ${v.subject}. ${v.visualDetails}. Charming toylike quality, crisp clean edges. ${v.contrastColors}. Simplified and ${v.moodWord}. No text, no letters, no watermark.`;
+}
+
+async function synthesizePrompts(
   description: string,
   apiKey: string
-): Promise<string> {
+): Promise<[string, string]> {
   const requestBody: KimiChatRequest = {
     model: KIMI_MODEL,
     messages: [
@@ -162,34 +196,36 @@ async function synthesizePrompt(
     throw new Error("Kimi API returned empty content");
   }
 
-  // Parse the JSON response — strip markdown code fences if present
-  let components: PromptComponents;
+  // Parse JSON — strip markdown code fences if present
+  let parsed: PromptResponse;
   try {
     let cleaned = content.trim();
     if (cleaned.startsWith("```")) {
-      cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
+      cleaned = cleaned
+        .replace(/^```(?:json)?\s*\n?/, "")
+        .replace(/\n?```\s*$/, "");
     }
-    components = JSON.parse(cleaned) as PromptComponents;
+    parsed = JSON.parse(cleaned) as PromptResponse;
   } catch {
     throw new Error(`Failed to parse Kimi response as JSON: ${content}`);
   }
 
-  // Validate required fields
-  if (
-    !components.subject ||
-    !components.visualDetails ||
-    !components.contrastColors ||
-    !components.moodWord
-  ) {
-    throw new Error(
-      `Kimi response missing required fields: ${JSON.stringify(components)}`
-    );
+  // Validate both variants
+  for (const key of ["variant_a", "variant_b"] as const) {
+    const v = parsed[key];
+    if (
+      !v?.subject ||
+      !v?.visualDetails ||
+      !v?.contrastColors ||
+      !v?.moodWord
+    ) {
+      throw new Error(
+        `Kimi response missing required fields in ${key}: ${JSON.stringify(v)}`
+      );
+    }
   }
 
-  // Assemble the final prompt using the template
-  const finalPrompt = `A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS ${components.subject}. ${components.visualDetails}. Charming toylike quality, crisp clean edges. ${components.contrastColors}. Simplified and ${components.moodWord}.`;
-
-  return finalPrompt;
+  return [assemblePrompt(parsed.variant_a), assemblePrompt(parsed.variant_b)];
 }
 
 // --- Image generation ---
@@ -225,9 +261,7 @@ async function generateIcon(
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(
-      `Dashscope error (${response.status}): ${errorText}`
-    );
+    throw new Error(`Dashscope error (${response.status}): ${errorText}`);
   }
 
   const data = (await response.json()) as {
@@ -262,7 +296,6 @@ async function handleGenerate(
   request: Request,
   env: Env
 ): Promise<Response> {
-  // Parse and validate input
   let body: { description?: string };
   try {
     body = (await request.json()) as { description?: string };
@@ -281,7 +314,6 @@ async function handleGenerate(
     );
   }
 
-  // Check rate limit
   const ip = getClientIP(request);
   const { allowed, remaining } = await checkAndIncrementRateLimit(
     env.RATE_LIMIT,
@@ -299,13 +331,16 @@ async function handleGenerate(
   }
 
   try {
-    // Step 1: Synthesize prompt via Kimi
-    const finalPrompt = await synthesizePrompt(description, env.DASHSCOPE_API_KEY);
+    // Step 1: Kimi generates two distinct prompt variants
+    const [promptA, promptB] = await synthesizePrompts(
+      description,
+      env.DASHSCOPE_API_KEY
+    );
 
-    // Step 2: Generate 2 icons in parallel
+    // Step 2: Generate icons in parallel — each with its own unique prompt
     const [iconUrl1, iconUrl2] = await Promise.all([
-      generateIcon(finalPrompt, env.DASHSCOPE_API_KEY),
-      generateIcon(finalPrompt, env.DASHSCOPE_API_KEY),
+      generateIcon(promptA, env.DASHSCOPE_API_KEY),
+      generateIcon(promptB, env.DASHSCOPE_API_KEY),
     ]);
 
     const response: GenerateSuccessResponse = {
@@ -348,12 +383,10 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    // Handle CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
     }
 
-    // Route handling
     if (path === "/api/generate" && request.method === "POST") {
       return handleGenerate(request, env);
     }
