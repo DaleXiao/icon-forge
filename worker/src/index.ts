@@ -1,7 +1,6 @@
 export interface Env {
   RATE_LIMIT: KVNamespace;
   DASHSCOPE_API_KEY: string;
-  KIMI_API_KEY: string;
   ENVIRONMENT: string;
 }
 
@@ -79,7 +78,7 @@ const KIMI_MODEL = "kimi-k2.5";
 const DASHSCOPE_MODEL = "qwen-image-2.0-pro";
 const DASHSCOPE_SUBMIT_URL =
   "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis";
-const KIMI_API_URL = "https://api.moonshot.cn/v1/chat/completions";
+const KIMI_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
 const POLL_INTERVAL_MS = 2000;
 const POLL_TIMEOUT_MS = 60000;
 
@@ -372,7 +371,7 @@ async function handleGenerate(
 
   try {
     // Step 1: Synthesize prompt via Kimi
-    const finalPrompt = await synthesizePrompt(description, env.KIMI_API_KEY);
+    const finalPrompt = await synthesizePrompt(description, env.DASHSCOPE_API_KEY);
 
     // Step 2: Generate 2 icons in parallel
     const [iconUrl1, iconUrl2] = await Promise.all([

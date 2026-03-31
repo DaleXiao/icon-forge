@@ -3,3 +3,4 @@ dist/
 .wrangler/
 .dev.vars
 *.local
+node_modules/\ndist/\n.wrangler/

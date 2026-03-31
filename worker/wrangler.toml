@@ -7,8 +7,7 @@ ENVIRONMENT = "production"
 
 [[kv_namespaces]]
 binding = "RATE_LIMIT"
-id = "placeholder-kv-id"
+id = "3a4327db33b842f893ab3d2dcf6cf081"
 
 # Secrets (set via `wrangler secret put`):
 # - DASHSCOPE_API_KEY
-# - KIMI_API_KEY
