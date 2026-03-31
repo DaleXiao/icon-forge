@@ -25,7 +25,7 @@ interface ErrorResponse {
 // --- Constants ---
 
 const EXAMPLE_PROMPTS = ['小鹿学英语', '极简记账', '旅行地图', '播客电台']
-const API_BASE = '/api'
+const API_BASE = import.meta.env.PROD ? 'https://icon-forge-worker.dale-x.workers.dev/api' : '/api'
 
 // --- App Component ---
 
