@@ -151,9 +151,7 @@ export default function App() {
       {/* Header */}
       <header className="text-center mb-12 sm:mb-16 animate-fade-in">
         <div className="inline-flex items-center gap-3 mb-4">
-          <span className="text-2xl" role="img" aria-label="forge">
-            🔨
-          </span>
+          <img src="/favicon.png" alt="Icon Forge" className="w-10 h-10 rounded-lg" />
         </div>
         <h1 className="text-3xl sm:text-4xl font-semibold text-warm-100 tracking-tight leading-tight">
           Icon Forge
