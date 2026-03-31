@@ -138,8 +138,9 @@ export default function App() {
     }
   }
 
-  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === 'Enter' && !loading && !rateLimited) {
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === 'Enter' && !e.shiftKey && !loading && !rateLimited) {
+      e.preventDefault()
       handleGenerate()
     }
   }
@@ -165,8 +166,7 @@ export default function App() {
       <div className="w-full max-w-lg animate-slide-up">
         {/* Input row */}
         <div className="relative flex gap-2.5">
-          <input
-            type="text"
+          <textarea
             value={description}
             onChange={(e) => {
               setDescription(e.target.value)
@@ -176,7 +176,14 @@ export default function App() {
             placeholder="描述你的 app..."
             maxLength={200}
             disabled={loading}
-            className="flex-1 bg-warm-900/80 border border-warm-700/40 rounded-2xl px-5 py-3.5 text-warm-100 placeholder-warm-500 text-base font-light tracking-wide focus-warm focus:border-accent-500/30 transition-colors disabled:opacity-50"
+            rows={1}
+            className="flex-1 bg-warm-900/80 border border-warm-700/40 rounded-2xl px-5 py-3.5 text-warm-100 placeholder-warm-500 text-base font-light tracking-wide focus-warm focus:border-accent-500/30 transition-colors disabled:opacity-50 resize-none overflow-hidden"
+            style={{ minHeight: '52px' }}
+            onInput={(e) => {
+              const target = e.target as HTMLTextAreaElement
+              target.style.height = '52px'
+              target.style.height = target.scrollHeight + 'px'
+            }}
           />
           <button
             onClick={handleGenerate}
