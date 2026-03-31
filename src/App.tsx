@@ -26,6 +26,7 @@ interface ErrorResponse {
 
 const EXAMPLE_PROMPTS = ['小鹿学英语', '极简记账', '旅行地图', '播客电台']
 const API_BASE = import.meta.env.PROD ? 'https://api-icon.weweekly.online/api' : '/api'
+const IS_TEST = new URLSearchParams(window.location.search).has('test')
 
 // --- App Component ---
 
@@ -45,7 +46,7 @@ export default function App() {
 
   async function fetchQuota() {
     try {
-      const res = await fetch(`${API_BASE}/quota`)
+      const res = await fetch(`${API_BASE}/quota${IS_TEST ? '?test' : ''}`)
       if (res.ok) {
         const data: QuotaResponse = await res.json()
         setRemaining(data.remaining)
@@ -75,7 +76,7 @@ export default function App() {
     setRateLimited(false)
 
     try {
-      const res = await fetch(`${API_BASE}/generate`, {
+      const res = await fetch(`${API_BASE}/generate${IS_TEST ? '?test' : ''}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ description: trimmed }),

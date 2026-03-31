@@ -374,18 +374,23 @@ async function handleGenerate(
     );
   }
 
-  // Step 0: Check rate limit (without incrementing)
+  // Step 0: Check rate limit (without incrementing) — skip for test mode
   const ip = getClientIP(request);
-  const { allowed } = await checkRateLimit(env.RATE_LIMIT, ip);
+  const url = new URL(request.url);
+  const isTestMode = url.searchParams.has("test");
 
-  if (!allowed) {
-    return jsonResponse(
-      {
-        error: "rate_limited",
-        message: "内测中，每日限额已用完，请明天再来 🙂",
-      },
-      429
-    );
+  if (!isTestMode) {
+    const { allowed } = await checkRateLimit(env.RATE_LIMIT, ip);
+
+    if (!allowed) {
+      return jsonResponse(
+        {
+          error: "rate_limited",
+          message: "内测中，每日限额已用完，请明天再来 🙂",
+        },
+        429
+      );
+    }
   }
 
   // Step 1: Acquire generation lock (queue behind other requests)
@@ -408,8 +413,8 @@ async function handleGenerate(
     const iconUrl1 = await generateIcon(promptA, env.DASHSCOPE_API_KEY);
     const iconUrl2 = await generateIcon(promptB, env.DASHSCOPE_API_KEY);
 
-    // Step 4: Only increment rate limit AFTER successful generation
-    const remaining = await incrementRateLimit(env.RATE_LIMIT, ip);
+    // Step 4: Only increment rate limit AFTER successful generation (skip in test mode)
+    const remaining = isTestMode ? 99 : await incrementRateLimit(env.RATE_LIMIT, ip);
 
     const response: GenerateSuccessResponse = {
       icons: [
@@ -436,6 +441,16 @@ async function handleQuota(
   request: Request,
   env: Env
 ): Promise<Response> {
+  const url = new URL(request.url);
+  const isTestMode = url.searchParams.has("test");
+
+  if (isTestMode) {
+    return new Response(JSON.stringify({ remaining: 99, total: 99 }), {
+      status: 200,
+      headers: { "Content-Type": "application/json", ...CORS_HEADERS },
+    });
+  }
+
   const ip = getClientIP(request);
   const remaining = await getRemainingQuota(env.RATE_LIMIT, ip);
   return new Response(JSON.stringify({ remaining, total: DAILY_LIMIT }), {
