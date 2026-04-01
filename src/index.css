@@ -3,13 +3,35 @@
 @tailwind utilities;
 
 /* ───────────────────────────────────────────────
-   Base: warm dark foundation
+   Theme transition — smooth color changes
+   ─────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  transition-property: background-color, border-color, color, box-shadow;
+  transition-duration: 0.3s;
+  transition-timing-function: ease;
+}
+
+/* Opt-out for elements that have their own transitions */
+.icon-card,
+.example-pill,
+.shimmer,
+.warm-pulse,
+.animate-fade-in,
+.animate-slide-up,
+button {
+  transition-property: background-color, border-color, color, box-shadow, transform;
+}
+
+/* ───────────────────────────────────────────────
+   Base: light theme (default)
    ─────────────────────────────────────────────── */
 body {
   margin: 0;
   padding: 0;
-  background-color: #171410;
-  color: #e2d9cc;
+  background-color: #FAFAF7;
+  color: #3a332a;
   font-family: 'Outfit', -apple-system, BlinkMacSystemFont, 'PingFang SC',
     'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -17,15 +39,27 @@ body {
 }
 
 /* ───────────────────────────────────────────────
+   Base: dark theme
+   ─────────────────────────────────────────────── */
+.dark body {
+  background-color: #171410;
+  color: #e2d9cc;
+}
+
+/* ───────────────────────────────────────────────
    Selection — warm accent
    ─────────────────────────────────────────────── */
 ::selection {
   background-color: rgba(245, 147, 21, 0.25);
+  color: #5a4a30;
+}
+
+.dark ::selection {
   color: #ffefd0;
 }
 
 /* ───────────────────────────────────────────────
-   Shimmer — warm gradient sweep
+   Shimmer — light theme
    ─────────────────────────────────────────────── */
 @keyframes shimmer {
   0%   { background-position: -468px 0; }
@@ -34,6 +68,18 @@ body {
 
 .shimmer {
   animation: shimmer 2s ease-in-out infinite;
+  background: linear-gradient(
+    to right,
+    #f0ede8 0%,
+    #e6e1da 20%,
+    #ddd7ce 35%,
+    #e6e1da 50%,
+    #f0ede8 100%
+  );
+  background-size: 800px 100%;
+}
+
+.dark .shimmer {
   background: linear-gradient(
     to right,
     #201c17 0%,
@@ -66,6 +112,10 @@ body {
    ─────────────────────────────────────────────── */
 .focus-warm:focus-visible {
   outline: none;
+  box-shadow: 0 0 0 2px #FAFAF7, 0 0 0 4px rgba(245, 147, 21, 0.5);
+}
+
+.dark .focus-warm:focus-visible {
   box-shadow: 0 0 0 2px #171410, 0 0 0 4px rgba(245, 147, 21, 0.5);
 }
 
@@ -79,6 +129,12 @@ body {
 
 .icon-card:hover {
   transform: translateY(-2px);
+  box-shadow: 0 12px 32px rgba(120, 58, 18, 0.1),
+              0 0 0 1px rgba(201, 187, 168, 0.12),
+              0 0 40px rgba(245, 147, 21, 0.04);
+}
+
+.dark .icon-card:hover {
   box-shadow: 0 12px 32px rgba(23, 20, 16, 0.6),
               0 0 0 1px rgba(201, 187, 168, 0.08),
               0 0 40px rgba(245, 147, 21, 0.06);
@@ -95,8 +151,12 @@ body {
 
 .example-pill:hover:not(:disabled) {
   background-color: rgba(245, 147, 21, 0.1);
-  color: #ffab33;
+  color: #d9750a;
   transform: translateY(-1px);
+}
+
+.dark .example-pill:hover:not(:disabled) {
+  color: #ffab33;
 }
 
 .example-pill:active:not(:disabled) {
@@ -151,9 +211,32 @@ body {
 }
 
 /* ───────────────────────────────────────────────
+   Theme toggle button
+   ─────────────────────────────────────────────── */
+.theme-toggle {
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+              background-color 0.3s ease,
+              box-shadow 0.3s ease;
+}
+
+.theme-toggle:hover {
+  transform: scale(1.08);
+}
+
+.theme-toggle:active {
+  transform: scale(0.95);
+}
+
+/* ───────────────────────────────────────────────
    Reduced motion
    ─────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+  }
+
   .shimmer,
   .warm-pulse,
   .animate-fade-in,
