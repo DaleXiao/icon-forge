@@ -4,3 +4,7 @@ dist/
 .dev.vars
 *.local
 node_modules/\ndist/\n.wrangler/
+
+# impeccable skills
+.agents/
+.adal/
