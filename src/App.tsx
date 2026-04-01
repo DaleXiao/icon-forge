@@ -404,8 +404,8 @@ function IconCard({
 }) {
   return (
     <div className="icon-card rounded-2.5xl overflow-hidden bg-white dark:bg-warm-900/60 border border-warm-200 dark:border-warm-800/30 shadow-warm-sm dark:shadow-card animate-slide-up">
-      {/* Icon display area — always dark bg for best icon presentation */}
-      <div className="aspect-square bg-warm-950 p-5">
+      {/* Icon display area — matches page bg in light, dark in dark mode */}
+      <div className="aspect-square bg-[#FAFAF7] dark:bg-warm-950 p-5">
         <img
           src={icon.url}
           alt={`Generated icon ${icon.index + 1}`}
