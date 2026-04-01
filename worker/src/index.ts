@@ -396,7 +396,7 @@ async function generateIcon(
     return imageUrl;
   }
 
-  throw new Error("Dashscope image generation failed after retries");
+  throw new Error("[throttled] Dashscope image generation failed after retries");
 }
 
 // --- Request handlers ---
@@ -476,6 +476,14 @@ async function handleGenerate(
     return jsonResponse(response, 200);
   } catch (error) {
     console.error("Generation failed:", error);
+    const errMsg = error instanceof Error ? error.message : String(error);
+    const isThrottled = errMsg.includes("Throttling") || errMsg.includes("429") || errMsg.includes("[throttled]");
+    if (isThrottled) {
+      return jsonResponse(
+        { error: "throttled", message: "服务器繁忙，请等待 30 秒后重试" },
+        503
+      );
+    }
     return jsonResponse(
       { error: "generation_failed", message: "生成失败，请稍后重试" },
       500
