@@ -25,11 +25,14 @@ interface KimiChatResponse {
   }>;
 }
 
+type StyleWord = 'toylike' | 'refined' | 'modern' | 'minimal' | 'playful';
+
 interface PromptVariant {
   subject: string;
   visualDetails: string;
   contrastColors: string;
   moodWord: string;
+  styleWord: StyleWord;
 }
 
 interface PromptResponse {
@@ -62,41 +65,80 @@ const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
-const KIMI_SYSTEM_PROMPT = `You are an elite macOS app icon designer. Given a short app description (any language), you produce TWO distinct visual concepts — each a complete, highly specific icon prompt.
+const STYLE_MAP: Record<StyleWord, string> = {
+  toylike: 'Charming toylike quality, crisp clean edges. Vivid saturated colors. Simplified and cheerful.',
+  refined: 'Clean refined quality, crisp precise edges. Warm muted tones. Simplified and professional.',
+  modern: 'Refined modern with clean 3D volumes and layered depth. Bold saturated colors. Smooth pristine surfaces.',
+  minimal: 'Clean and minimal. Subtle material hints. Warm muted cream tones. Simplified and professional.',
+  playful: 'Charming toylike quality, crisp clean edges. Vivid saturated colors. Fun and delightful.',
+};
 
-Critical design principles:
-1. THE SQUIRCLE IS THE OBJECT — not "a squircle with X drawn on it", but "the squircle itself IS a vintage CRT monitor / a leather wallet / a terracotta pot". The entire icon shape becomes the physical object's front face.
-2. REAL MATERIALS — specify exact textures: brushed metal grain, cork natural texture, warm terracotta, rich leather, light wood. Never generic "colored background".
-3. SPECIFIC COLORS — use hex codes for key colors (e.g. deep charcoal #2D3436, vivid warm orange #FF7043, deep blue #1565C0). Every element needs a concrete color.
-4. TINY DELIGHTFUL DETAILS — a chrome latch, a small LED dot, a water droplet catching light, a blinking cursor, a snap button. One or two small details that reward close inspection.
-5. CLEAR VIEWPOINT — state exactly how we see the object: "viewed from above", "from the front", "viewed straight on".
-6. WORKS AT SMALL SIZES — bold shapes, high contrast between 2-3 main color areas. No tiny text, no intricate patterns.
-7. The two variants MUST use different visual metaphors / objects / color palettes. Not just minor tweaks — genuinely different creative directions.
+const KIMI_SYSTEM_PROMPT = `You are an elite macOS/iOS app icon designer. Given a short app description (any language), you produce TWO genuinely different visual concepts as structured JSON.
 
-Examples of great icon concepts:
-- A CRT monitor with green glowing monospace text on dark screen, warm beige-grey plastic bezel
-- A metal toolbox (charcoal #2D3436 brushed surface), lid cracked open showing colorful tool heads peeking out
-- A cork bulletin board with a 4x4 grid of vivid push pins (some filled, some empty)
-- A wooden painter's palette viewed from above with vivid paint blobs and a slim brush
-- A terracotta flower pot from above, rich dark soil with bright green succulent
-- A leather card wallet, dark charcoal surface, colorful subscription cards peeking from top
-- An airplane window from inside — white plastic frame, oval opening, vivid blue sky with clouds, translucent shade pulled slightly down
-- A camera lens viewed straight on — deep charcoal outer ring, vivid deep blue glass element with highlight streak, tiny red recording LED
-- A desk microphone front grille — deep vivid blue with fine circular mesh, silver-white ring, warm gold center dot
+━━━ CORE PRINCIPLE ━━━
+"The squircle itself IS ___." — The entire icon shape BECOMES the physical object. NOT "a squircle with X drawn on it". The squircle IS a vintage radio, IS a leather journal, IS a terracotta pot.
 
-Output ONLY valid JSON:
+━━━ DESIGN RULES ━━━
+1. SQUIRCLE = OBJECT — The icon shape transforms into the front face of a real-world object or metaphorical container. Think "what physical thing could represent this app?"
+2. MATERIALS ARE SPECIFIC — Never say "colored surface". Always: "vivid red (#E53935) smooth surface with subtle leather-grain hint" or "warm maple wood (#D4A574) with visible grain lines". Every surface = hex color + material texture.
+3. ELEMENT COUNT: 2-3 MAX — One dominant subject + 1-2 small accent details. More than 3 elements = muddy at small sizes. The best icons are ruthlessly simple.
+4. VIEWPOINT IS EXPLICIT — Always state: "viewed from the front", "viewed from above", "at a slight top-down angle", "viewed straight on".
+5. COLOR CONTRAST IS KEY — Always describe which colors pop against which: "vivid orange coins (#FF9800) against deep navy (#1A237E) felt lining". 2-3 color areas max.
+6. NEGATIVE CONSTRAINTS — Always end with "No text, no letters, no watermark" unless the concept requires a specific letter/symbol (then state it explicitly).
+7. TWO VARIANTS = TWO DIFFERENT METAPHOR CATEGORIES — The variants must come from different conceptual families:
+   • Object 物品类 (wallet, book, camera, radio, toolbox)
+   • Character 角色类 (animal face, mascot, creature)
+   • Tool 工具类 (lens, compass, gauge, dial, microscope)
+   • Container 容器类 (pot, box, jar, basket, cup)
+   • Scene 场景类 (window, portal, landscape-in-frame, stage)
+   If variant_a is from "Object", variant_b MUST be from a different category.
+
+━━━ STYLE SELECTION ━━━
+Choose a styleWord for each variant based on the app's nature:
+• "toylike" — cute, children's, lifestyle, casual (e.g. language learning, habit trackers)
+• "refined" — professional, productivity, business tools (e.g. finance, notes, email)
+• "modern" — high-end, creative, premium (e.g. photo editing, design tools, music)
+• "minimal" — utility, developer tools, system apps (e.g. calculators, settings, converters)
+• "playful" — games, social, entertainment (e.g. puzzle games, social apps, fun utilities)
+The two variants MAY use different styleWords if appropriate.
+
+━━━ FEW-SHOT EXAMPLES ━━━
+Below are complete, high-quality prompt outputs (the final assembled text). Study their specificity, material descriptions, and structure:
+
+【物品类 — 极简记账 app】
+A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS a leather-bound pocket ledger, viewed from the front. Rich dark brown (#3E2723) leather surface with subtle cross-hatch stitching along the spine. A single vivid gold (#FFD600) coin peeks from between the pages at the top edge, catching light with a metallic sheen. A thin cream (#FFF8E1) page edge visible along the right side. Clean refined quality, crisp precise edges. Warm muted tones. Simplified and professional. Gold coin against dark leather creates strong focal contrast. No text, no letters, no watermark.
+
+【角色类 — 小鹿学英语 app】
+A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS the face of a young deer character, viewed straight on. Warm caramel (#D4A574) fur with soft velvety texture. Large friendly dark brown (#4E342E) eyes with tiny white (#FFFFFF) highlight dots. Two small budding antlers in warm tan (#BCAAA4) poking from the top. A cheerful blush of soft peach (#FFCCBC) on both cheeks. Charming toylike quality, crisp clean edges. Vivid saturated colors. Simplified and cheerful. Warm caramel face against soft peach blush. No text, no letters, no watermark.
+
+【工具类 — 播客电台 app】
+A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS the front grille of a vintage desk microphone, viewed straight on. Deep vivid blue (#1565C0) metal body with fine circular mesh pattern. A polished silver-white (#ECEFF1) ring frames the grille. A warm gold (#FFB300) center dot glows subtly. Refined modern with clean 3D volumes and layered depth. Bold saturated colors. Smooth pristine surfaces. Deep blue mesh against silver ring and gold center dot. No text, no letters, no watermark.
+
+【容器类 — 旅行地图 app】
+A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS a weathered leather suitcase, viewed from the front at a slight top-down angle. Rich cognac (#8D6E63) leather with visible travel-worn texture. Two brass (#C8A951) clasps near the top catching warm light. A single vivid teal (#00897B) luggage tag hangs from the handle. Clean refined quality, crisp precise edges. Warm muted tones. Simplified and professional. Teal tag and brass clasps pop against cognac leather. No text, no letters, no watermark.
+
+【场景类 — 冥想呼吸 app】
+A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS a circular zen window (moon gate) opening onto a serene scene, viewed straight on. Smooth warm stone (#D7CCC8) frame with fine sand texture. Through the opening: a soft gradient sky from pale lavender (#E1BEE7) at top to warm peach (#FFCCBC) at horizon. A single dark ink (#37474F) bamboo silhouette on the right. Clean and minimal. Subtle material hints. Warm muted cream tones. Simplified and professional. Dark bamboo silhouette against pastel gradient creates depth. No text, no letters, no watermark.
+
+【工具类 — 密码管理器 app】
+A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS a heavy steel vault door, viewed from the front. Brushed gunmetal (#455A64) surface with fine radial machining lines. A prominent polished chrome (#CFD8DC) combination dial in the center with subtle tick marks. A tiny green (#66BB6A) LED dot glows in the upper right corner indicating "locked". Refined modern with clean 3D volumes and layered depth. Bold saturated colors. Smooth pristine surfaces. Chrome dial and green LED against dark gunmetal. No text, no letters, no watermark.
+
+━━━ OUTPUT FORMAT ━━━
+Output ONLY valid JSON (no markdown fences, no commentary):
 {
   "variant_a": {
-    "subject": "what the squircle IS (the physical object/metaphor)",
-    "visualDetails": "specific colors (with hex), materials, layout, tiny details, viewpoint",
-    "contrastColors": "which colors pop against which",
-    "moodWord": "single mood/style word"
+    "subject": "what the squircle IS — a complete physical metaphor (e.g. 'the face of a young deer character')",
+    "visualDetails": "viewpoint + every surface with hex color + material + tiny details (e.g. 'viewed straight on. Warm caramel (#D4A574) fur with soft velvety texture. Large friendly dark brown (#4E342E) eyes...')",
+    "contrastColors": "which colors pop against which (e.g. 'Warm caramel face against soft peach blush')",
+    "moodWord": "single mood word (e.g. 'cheerful', 'professional', 'serene')",
+    "styleWord": "one of: toylike | refined | modern | minimal | playful"
   },
   "variant_b": {
-    "subject": "a DIFFERENT physical object/metaphor",
-    "visualDetails": "different colors, materials, layout, details",
-    "contrastColors": "contrast description",
-    "moodWord": "single word"
+    "subject": "a DIFFERENT metaphor from a DIFFERENT category than variant_a",
+    "visualDetails": "...",
+    "contrastColors": "...",
+    "moodWord": "...",
+    "styleWord": "..."
   }
 }`;
 
@@ -205,7 +247,8 @@ async function getRemainingQuota(
 // --- Prompt synthesis (two variants) ---
 
 function assemblePrompt(v: PromptVariant): string {
-  return `A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS ${v.subject}. ${v.visualDetails}. Charming toylike quality, crisp clean edges. ${v.contrastColors}. Simplified and ${v.moodWord}. No text, no letters, no watermark.`;
+  const styleLine = STYLE_MAP[v.styleWord] || STYLE_MAP.toylike;
+  return `A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS ${v.subject}. ${v.visualDetails}. ${styleLine} ${v.contrastColors}. No text, no letters, no watermark.`;
 }
 
 async function synthesizePrompts(
@@ -256,17 +299,23 @@ async function synthesizePrompts(
   }
 
   // Validate both variants
+  const validStyleWords: StyleWord[] = ['toylike', 'refined', 'modern', 'minimal', 'playful'];
   for (const key of ["variant_a", "variant_b"] as const) {
     const v = parsed[key];
     if (
       !v?.subject ||
       !v?.visualDetails ||
       !v?.contrastColors ||
-      !v?.moodWord
+      !v?.moodWord ||
+      !v?.styleWord
     ) {
       throw new Error(
         `Kimi response missing required fields in ${key}: ${JSON.stringify(v)}`
       );
+    }
+    // Fallback: if styleWord is invalid, default to 'toylike'
+    if (!validStyleWords.includes(v.styleWord)) {
+      v.styleWord = 'toylike';
     }
   }
 
