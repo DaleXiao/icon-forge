@@ -2,6 +2,7 @@ export interface Env {
   RATE_LIMIT: KVNamespace;
   DASHSCOPE_API_KEY: string;
   ENVIRONMENT: string;
+  GENERATION_QUEUE: DurableObjectNamespace;
 }
 
 // --- Types ---
@@ -40,14 +41,22 @@ interface PromptResponse {
   variant_b: PromptVariant;
 }
 
-interface GenerateSuccessResponse {
+interface QueueTask {
+  taskId: string;
+  description: string;
+  ip: string;
+  isTestMode: boolean;
+  status: "queued" | "generating" | "complete" | "error";
   icons: Array<{ url: string; index: number }>;
-  remaining: number;
+  remaining?: number;
+  errorMessage?: string;
+  createdAt: number;
+  currentIconIndex?: number;
 }
 
-interface ErrorResponse {
-  error: string;
-  message: string;
+interface SSEWriter {
+  writer: WritableStreamDefaultWriter<Uint8Array>;
+  taskId: string;
 }
 
 // --- Constants ---
@@ -64,6 +73,9 @@ const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
+
+const MAX_QUEUE_SIZE = 3;
+const TASK_TIMEOUT_MS = 120_000;
 
 const STYLE_MAP: Record<StyleWord, string> = {
   toylike: 'Charming toylike quality, crisp clean edges. Vivid saturated colors. Simplified and cheerful.',
@@ -85,13 +97,12 @@ const KIMI_SYSTEM_PROMPT = `You are an elite macOS/iOS app icon designer. Given 
 4. VIEWPOINT IS EXPLICIT — Always state: "viewed from the front", "viewed from above", "at a slight top-down angle", "viewed straight on".
 5. COLOR CONTRAST IS KEY — Always describe which colors pop against which: "vivid orange coins (#FF9800) against deep navy (#1A237E) felt lining". 2-3 color areas max.
 6. NEGATIVE CONSTRAINTS — Always end with "No text, no letters, no watermark" unless the concept requires a specific letter/symbol (then state it explicitly).
-7. TWO VARIANTS = TWO DIFFERENT METAPHOR CATEGORIES — The variants must come from different conceptual families:
-   • Object 物品类 (wallet, book, camera, radio, toolbox)
-   • Character 角色类 (animal face, mascot, creature)
-   • Tool 工具类 (lens, compass, gauge, dial, microscope)
-   • Container 容器类 (pot, box, jar, basket, cup)
-   • Scene 场景类 (window, portal, landscape-in-frame, stage)
-   If variant_a is from "Object", variant_b MUST be from a different category.
+
+━━━ RELEVANCE & DIVERSITY ━━━
+7. BOTH VARIANTS MUST BE STRONGLY RELEVANT to the app description. A user should immediately understand "this icon is for THAT app". Never sacrifice relevance for novelty. If one variant is weak, make it stronger — not more random.
+8. TWO DIFFERENT VISUAL INTERPRETATIONS — Both variants explore the SAME theme from different angles. Think: two designers given the same brief, each with their own creative take. They may use similar object categories if that produces the best result.
+9. NEVER REUSE metaphors from the examples below. Choose unexpected, surprising objects from everyday life. Avoid clichés: no compass for travel, no suitcase for travel, no coins for finance, no lock for security — unless you truly cannot find a better metaphor.
+10. MATERIAL DIVERSITY — Vary your material palette. Don't default to leather/brass/copper. Consider: glass, ceramic, fabric, paper, stone, candy, ice, wood grain, enamel, felt, concrete, porcelain, resin, wax, frosted glass.
 
 ━━━ STYLE SELECTION ━━━
 Choose a styleWord for each variant based on the app's nature:
@@ -103,25 +114,13 @@ Choose a styleWord for each variant based on the app's nature:
 The two variants MAY use different styleWords if appropriate.
 
 ━━━ FEW-SHOT EXAMPLES ━━━
-Below are complete, high-quality prompt outputs (the final assembled text). Study their specificity, material descriptions, and structure:
+Study the FORMAT and SPECIFICITY only. Do NOT copy these metaphors — invent your own.
 
-【物品类 — 极简记账 app】
-A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS a leather-bound pocket ledger, viewed from the front. Rich dark brown (#3E2723) leather surface with subtle cross-hatch stitching along the spine. A single vivid gold (#FFD600) coin peeks from between the pages at the top edge, catching light with a metallic sheen. A thin cream (#FFF8E1) page edge visible along the right side. Clean refined quality, crisp precise edges. Warm muted tones. Simplified and professional. Gold coin against dark leather creates strong focal contrast. No text, no letters, no watermark.
-
-【角色类 — 小鹿学英语 app】
-A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS the face of a young deer character, viewed straight on. Warm caramel (#D4A574) fur with soft velvety texture. Large friendly dark brown (#4E342E) eyes with tiny white (#FFFFFF) highlight dots. Two small budding antlers in warm tan (#BCAAA4) poking from the top. A cheerful blush of soft peach (#FFCCBC) on both cheeks. Charming toylike quality, crisp clean edges. Vivid saturated colors. Simplified and cheerful. Warm caramel face against soft peach blush. No text, no letters, no watermark.
-
-【工具类 — 播客电台 app】
+【Example A — format reference】
 A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS the front grille of a vintage desk microphone, viewed straight on. Deep vivid blue (#1565C0) metal body with fine circular mesh pattern. A polished silver-white (#ECEFF1) ring frames the grille. A warm gold (#FFB300) center dot glows subtly. Refined modern with clean 3D volumes and layered depth. Bold saturated colors. Smooth pristine surfaces. Deep blue mesh against silver ring and gold center dot. No text, no letters, no watermark.
 
-【容器类 — 旅行地图 app】
-A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS a weathered leather suitcase, viewed from the front at a slight top-down angle. Rich cognac (#8D6E63) leather with visible travel-worn texture. Two brass (#C8A951) clasps near the top catching warm light. A single vivid teal (#00897B) luggage tag hangs from the handle. Clean refined quality, crisp precise edges. Warm muted tones. Simplified and professional. Teal tag and brass clasps pop against cognac leather. No text, no letters, no watermark.
-
-【场景类 — 冥想呼吸 app】
-A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS a circular zen window (moon gate) opening onto a serene scene, viewed straight on. Smooth warm stone (#D7CCC8) frame with fine sand texture. Through the opening: a soft gradient sky from pale lavender (#E1BEE7) at top to warm peach (#FFCCBC) at horizon. A single dark ink (#37474F) bamboo silhouette on the right. Clean and minimal. Subtle material hints. Warm muted cream tones. Simplified and professional. Dark bamboo silhouette against pastel gradient creates depth. No text, no letters, no watermark.
-
-【工具类 — 密码管理器 app】
-A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS a heavy steel vault door, viewed from the front. Brushed gunmetal (#455A64) surface with fine radial machining lines. A prominent polished chrome (#CFD8DC) combination dial in the center with subtle tick marks. A tiny green (#66BB6A) LED dot glows in the upper right corner indicating "locked". Refined modern with clean 3D volumes and layered depth. Bold saturated colors. Smooth pristine surfaces. Chrome dial and green LED against dark gunmetal. No text, no letters, no watermark.
+【Example B — format reference】
+A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS the face of a young deer character, viewed straight on. Warm caramel (#D4A574) fur with soft velvety texture. Large friendly dark brown (#4E342E) eyes with tiny white (#FFFFFF) highlight dots. Two small budding antlers in warm tan (#BCAAA4) poking from the top. A cheerful blush of soft peach (#FFCCBC) on both cheeks. Charming toylike quality, crisp clean edges. Vivid saturated colors. Simplified and cheerful. Warm caramel face against soft peach blush. No text, no letters, no watermark.
 
 ━━━ OUTPUT FORMAT ━━━
 Output ONLY valid JSON (no markdown fences, no commentary):
@@ -145,7 +144,7 @@ Output ONLY valid JSON (no markdown fences, no commentary):
 // --- Helper functions ---
 
 function jsonResponse(
-  data: GenerateSuccessResponse | ErrorResponse,
+  data: Record<string, unknown>,
   status: number = 200
 ): Response {
   return new Response(JSON.stringify(data), {
@@ -199,41 +198,6 @@ async function incrementRateLimit(
   return DAILY_LIMIT - newCount;
 }
 
-// --- Global generation queue (KV-based lock) ---
-
-async function acquireGenerationLock(
-  kv: KVNamespace,
-  maxWaitMs: number = 30000
-): Promise<boolean> {
-  const lockKey = "generation:lock";
-  const startTime = Date.now();
-
-  while (Date.now() - startTime < maxWaitMs) {
-    const existing = await kv.get(lockKey);
-    if (!existing) {
-      // Try to acquire lock (TTL 120s as safety net)
-      await kv.put(lockKey, Date.now().toString(), { expirationTtl: 120 });
-      return true;
-    }
-
-    // Check if lock is stale (> 90s old)
-    const lockTime = parseInt(existing, 10);
-    if (Date.now() - lockTime > 90000) {
-      await kv.put(lockKey, Date.now().toString(), { expirationTtl: 120 });
-      return true;
-    }
-
-    // Wait and retry
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-  }
-
-  return false;
-}
-
-async function releaseGenerationLock(kv: KVNamespace): Promise<void> {
-  await kv.delete("generation:lock");
-}
-
 async function getRemainingQuota(
   kv: KVNamespace,
   ip: string
@@ -244,11 +208,11 @@ async function getRemainingQuota(
   return Math.max(0, DAILY_LIMIT - count);
 }
 
-// --- Prompt synthesis (two variants) ---
+// --- Prompt synthesis ---
 
 function assemblePrompt(v: PromptVariant): string {
   const styleLine = STYLE_MAP[v.styleWord] || STYLE_MAP.toylike;
-  return `A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS ${v.subject}. ${v.visualDetails}. ${styleLine} ${v.contrastColors}. No text, no letters, no watermark.`;
+  return `A macOS app icon in a single squircle shape with smooth continuous rounded corners — the ENTIRE image is one rounded square, centered on white canvas with padding, occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS ${v.subject}. ${v.visualDetails}. ${styleLine} ${v.contrastColors}. The icon MUST be a single unified squircle shape — no floating objects, no circular frames, no irregular silhouettes. No text, no letters, no watermark.`;
 }
 
 async function synthesizePrompts(
@@ -257,6 +221,7 @@ async function synthesizePrompts(
 ): Promise<[string, string]> {
   const requestBody: KimiChatRequest = {
     model: KIMI_MODEL,
+    temperature: 0.7,
     messages: [
       { role: "system", content: KIMI_SYSTEM_PROMPT },
       { role: "user", content: description },
@@ -284,7 +249,6 @@ async function synthesizePrompts(
     throw new Error("Kimi API returned empty content");
   }
 
-  // Parse JSON — strip markdown code fences if present
   let parsed: PromptResponse;
   try {
     let cleaned = content.trim();
@@ -298,7 +262,6 @@ async function synthesizePrompts(
     throw new Error(`Failed to parse Kimi response as JSON: ${content}`);
   }
 
-  // Validate both variants
   const validStyleWords: StyleWord[] = ['toylike', 'refined', 'modern', 'minimal', 'playful'];
   for (const key of ["variant_a", "variant_b"] as const) {
     const v = parsed[key];
@@ -313,7 +276,6 @@ async function synthesizePrompts(
         `Kimi response missing required fields in ${key}: ${JSON.stringify(v)}`
       );
     }
-    // Fallback: if styleWord is invalid, default to 'toylike'
     if (!validStyleWords.includes(v.styleWord)) {
       v.styleWord = 'toylike';
     }
@@ -327,7 +289,7 @@ async function synthesizePrompts(
 async function generateIcon(
   prompt: string,
   apiKey: string,
-  maxRetries: number = 3
+  maxRetries: number = 5
 ): Promise<string> {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const response = await fetch(DASHSCOPE_SUBMIT_URL, {
@@ -349,6 +311,7 @@ async function generateIcon(
         parameters: {
           size: "1024*1024",
           n: 1,
+          seed: Math.floor(Math.random() * 2147483647),
           prompt_extend: false,
           watermark: false,
         },
@@ -357,9 +320,9 @@ async function generateIcon(
 
     if (!response.ok) {
       const errorText = await response.text();
-      // Retry on rate limit
       if (response.status === 429 && attempt < maxRetries - 1) {
-        await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 3000));
+        const delay = Math.min(5000 * Math.pow(2, attempt), 30000);
+        await new Promise((resolve) => setTimeout(resolve, delay));
         continue;
       }
       throw new Error(`Dashscope error (${response.status}): ${errorText}`);
@@ -378,9 +341,9 @@ async function generateIcon(
     };
 
     if (data.code) {
-      // Retry on throttling
       if (data.code === "Throttling.RateQuota" && attempt < maxRetries - 1) {
-        await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 3000));
+        const delay = Math.min(5000 * Math.pow(2, attempt), 30000);
+        await new Promise((resolve) => setTimeout(resolve, delay));
         continue;
       }
       throw new Error(`Dashscope API error: ${data.code} - ${data.message}`);
@@ -399,7 +362,385 @@ async function generateIcon(
   throw new Error("[throttled] Dashscope image generation failed after retries");
 }
 
+// --- Durable Object: GenerationQueue ---
+
+export class GenerationQueue {
+  private state: DurableObjectState;
+  private queue: QueueTask[] = [];
+  private sseClients: Map<string, SSEWriter[]> = new Map();
+  private processing = false;
+  private env: Env;
+  private lastDashscopeFinishedAt = 0;
+  private static readonly DASHSCOPE_COOLDOWN_MS = 3000;
+
+  constructor(state: DurableObjectState, env: Env) {
+    this.state = state;
+    this.env = env;
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    if (path === "/enqueue" && request.method === "POST") {
+      return this.handleEnqueue(request);
+    }
+
+    if (path === "/stream" && request.method === "GET") {
+      return this.handleStream(request);
+    }
+
+    if (path === "/status" && request.method === "GET") {
+      return this.handleStatus(request);
+    }
+
+    return new Response("Not Found", { status: 404 });
+  }
+
+  private async handleEnqueue(request: Request): Promise<Response> {
+    const body = (await request.json()) as {
+      taskId: string;
+      description: string;
+      ip: string;
+      isTestMode: boolean;
+    };
+
+    // Clean up timed-out tasks
+    this.cleanupTimedOut();
+
+    // Check queue capacity
+    if (this.queue.length >= MAX_QUEUE_SIZE) {
+      return jsonResponse(
+        {
+          error: "queue_full",
+          message: "当前使用人数较多，请 30 秒后再试",
+          retryAfter: 30,
+        },
+        503
+      );
+    }
+
+    const task: QueueTask = {
+      taskId: body.taskId,
+      description: body.description,
+      ip: body.ip,
+      isTestMode: body.isTestMode,
+      status: "queued",
+      icons: [],
+      createdAt: Date.now(),
+    };
+
+    this.queue.push(task);
+    const position = this.queue.length;
+
+    // Start processing if not already
+    if (!this.processing) {
+      this.processQueue();
+    }
+
+    return jsonResponse({ taskId: task.taskId, position }, 202);
+  }
+
+  private handleStream(request: Request): Response {
+    const url = new URL(request.url);
+    const taskId = url.searchParams.get("taskId");
+
+    if (!taskId) {
+      return jsonResponse({ error: "missing_taskId", message: "缺少 taskId 参数" }, 400);
+    }
+
+    // Check if task exists or has completed results
+    const task = this.queue.find((t) => t.taskId === taskId);
+
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = writable.getWriter();
+    const encoder = new TextEncoder();
+
+    const sseWriter: SSEWriter = { writer, taskId };
+
+    // Register the SSE client
+    if (!this.sseClients.has(taskId)) {
+      this.sseClients.set(taskId, []);
+    }
+    this.sseClients.get(taskId)!.push(sseWriter);
+
+    // Send current state immediately if task exists
+    if (task) {
+      const sendCurrentState = async () => {
+        try {
+          if (task.status === "queued") {
+            const position = this.queue.findIndex((t) => t.taskId === taskId) + 1;
+            await writer.write(
+              encoder.encode(`event: queued\ndata: ${JSON.stringify({ position })}\n\n`)
+            );
+          } else if (task.status === "generating") {
+            await writer.write(
+              encoder.encode(
+                `event: generating\ndata: ${JSON.stringify({ index: task.currentIconIndex ?? 0, total: 2 })}\n\n`
+              )
+            );
+            // Send any already-completed icons
+            for (const icon of task.icons) {
+              await writer.write(
+                encoder.encode(
+                  `event: icon_ready\ndata: ${JSON.stringify({ url: icon.url, index: icon.index })}\n\n`
+                )
+              );
+            }
+          } else if (task.status === "complete") {
+            // Send all icons and complete
+            for (const icon of task.icons) {
+              await writer.write(
+                encoder.encode(
+                  `event: icon_ready\ndata: ${JSON.stringify({ url: icon.url, index: icon.index })}\n\n`
+                )
+              );
+            }
+            await writer.write(
+              encoder.encode(
+                `event: complete\ndata: ${JSON.stringify({ icons: task.icons, remaining: task.remaining })}\n\n`
+              )
+            );
+            await writer.close();
+            this.removeSseClient(taskId, sseWriter);
+          } else if (task.status === "error") {
+            await writer.write(
+              encoder.encode(
+                `event: error\ndata: ${JSON.stringify({ message: task.errorMessage })}\n\n`
+              )
+            );
+            await writer.close();
+            this.removeSseClient(taskId, sseWriter);
+          }
+        } catch {
+          // Client disconnected
+          this.removeSseClient(taskId, sseWriter);
+        }
+      };
+      sendCurrentState();
+    } else {
+      // Task not found — might have already been cleaned up
+      const sendNotFound = async () => {
+        try {
+          await writer.write(
+            encoder.encode(
+              `event: error\ndata: ${JSON.stringify({ message: "任务不存在或已过期" })}\n\n`
+            )
+          );
+          await writer.close();
+        } catch {
+          // ignore
+        }
+      };
+      sendNotFound();
+      this.removeSseClient(taskId, sseWriter);
+    }
+
+    return new Response(readable, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        ...CORS_HEADERS,
+      },
+    });
+  }
+
+  private handleStatus(request: Request): Response {
+    const url = new URL(request.url);
+    const taskId = url.searchParams.get("taskId");
+
+    if (!taskId) {
+      return jsonResponse({ error: "missing_taskId", message: "缺少 taskId 参数" }, 400);
+    }
+
+    const task = this.queue.find((t) => t.taskId === taskId);
+    if (!task) {
+      return jsonResponse({ error: "not_found", message: "任务不存在或已过期" }, 404);
+    }
+
+    const position = this.queue.findIndex((t) => t.taskId === taskId) + 1;
+    return jsonResponse({
+      taskId: task.taskId,
+      status: task.status,
+      position,
+      icons: task.icons,
+      remaining: task.remaining,
+    });
+  }
+
+  private async processQueue(): Promise<void> {
+    if (this.processing) return;
+    this.processing = true;
+
+    while (this.queue.length > 0) {
+      const task = this.queue[0];
+
+      // Skip if already completed/errored (shouldn't happen, but safety)
+      if (task.status === "complete" || task.status === "error") {
+        this.queue.shift();
+        continue;
+      }
+
+      // Notify all queued tasks of their position
+      this.broadcastQueuePositions();
+
+      try {
+        // Mark as generating
+        task.status = "generating";
+        task.currentIconIndex = 0;
+        this.sendToTask(task.taskId, "generating", { index: 0, total: 2 });
+
+        // Step 1: Synthesize prompts via Kimi
+        const [promptA, promptB] = await synthesizePrompts(
+          task.description,
+          this.env.DASHSCOPE_API_KEY
+        );
+
+        // Step 2: Generate icon 1 (with cooldown)
+        await this.waitForCooldown();
+        const iconUrl1 = await generateIcon(promptA, this.env.DASHSCOPE_API_KEY);
+        this.lastDashscopeFinishedAt = Date.now();
+        task.icons.push({ url: iconUrl1, index: 0 });
+        this.sendToTask(task.taskId, "icon_ready", { url: iconUrl1, index: 0 });
+
+        // Notify generating icon 2
+        task.currentIconIndex = 1;
+        this.sendToTask(task.taskId, "generating", { index: 1, total: 2 });
+
+        // Step 3: Generate icon 2 (with cooldown)
+        await this.waitForCooldown();
+        const iconUrl2 = await generateIcon(promptB, this.env.DASHSCOPE_API_KEY);
+        this.lastDashscopeFinishedAt = Date.now();
+        task.icons.push({ url: iconUrl2, index: 1 });
+        this.sendToTask(task.taskId, "icon_ready", { url: iconUrl2, index: 1 });
+
+        // Step 4: Increment rate limit (deferred billing)
+        const remaining = task.isTestMode
+          ? 99
+          : await incrementRateLimit(this.env.RATE_LIMIT, task.ip);
+        task.remaining = remaining;
+
+        // Complete
+        task.status = "complete";
+        this.sendToTask(task.taskId, "complete", {
+          icons: task.icons,
+          remaining,
+        });
+      } catch (error) {
+        console.error("Generation failed:", error);
+        const errMsg = error instanceof Error ? error.message : String(error);
+        const isThrottled =
+          errMsg.includes("Throttling") ||
+          errMsg.includes("429") ||
+          errMsg.includes("[throttled]");
+
+        task.status = "error";
+        task.errorMessage = isThrottled
+          ? "服务器繁忙，请等待 30 秒后重试"
+          : "生成失败，请稍后重试";
+        this.sendToTask(task.taskId, "error", { message: task.errorMessage });
+      }
+
+      // Remove completed/errored task from queue (keep for a bit for reconnection)
+      // We shift it out and rely on the SSE state already sent
+      this.queue.shift();
+
+      // Clean up SSE clients for this task
+      this.closeSseClients(task.taskId);
+    }
+
+    this.processing = false;
+  }
+
+  private async waitForCooldown(): Promise<void> {
+    if (this.lastDashscopeFinishedAt === 0) return;
+    const elapsed = Date.now() - this.lastDashscopeFinishedAt;
+    const remaining = GenerationQueue.DASHSCOPE_COOLDOWN_MS - elapsed;
+    if (remaining > 0) {
+      await new Promise((resolve) => setTimeout(resolve, remaining));
+    }
+  }
+
+  private broadcastQueuePositions(): void {
+    for (let i = 0; i < this.queue.length; i++) {
+      const task = this.queue[i];
+      if (task.status === "queued") {
+        this.sendToTask(task.taskId, "queued", { position: i + 1 });
+      }
+    }
+  }
+
+  private sendToTask(taskId: string, event: string, data: Record<string, unknown>): void {
+    const clients = this.sseClients.get(taskId);
+    if (!clients || clients.length === 0) return;
+
+    const encoder = new TextEncoder();
+    const message = encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+
+    const toRemove: SSEWriter[] = [];
+    for (const client of clients) {
+      try {
+        client.writer.write(message);
+      } catch {
+        toRemove.push(client);
+      }
+    }
+
+    // Clean up disconnected clients
+    for (const client of toRemove) {
+      this.removeSseClient(taskId, client);
+    }
+  }
+
+  private closeSseClients(taskId: string): void {
+    const clients = this.sseClients.get(taskId);
+    if (!clients) return;
+
+    for (const client of clients) {
+      try {
+        client.writer.close();
+      } catch {
+        // already closed
+      }
+    }
+    this.sseClients.delete(taskId);
+  }
+
+  private removeSseClient(taskId: string, client: SSEWriter): void {
+    const clients = this.sseClients.get(taskId);
+    if (!clients) return;
+
+    const idx = clients.indexOf(client);
+    if (idx !== -1) {
+      clients.splice(idx, 1);
+    }
+    if (clients.length === 0) {
+      this.sseClients.delete(taskId);
+    }
+  }
+
+  private cleanupTimedOut(): void {
+    const now = Date.now();
+    this.queue = this.queue.filter((task) => {
+      if (now - task.createdAt > TASK_TIMEOUT_MS) {
+        this.sendToTask(task.taskId, "error", {
+          message: "任务超时，请重新提交",
+        });
+        this.closeSseClients(task.taskId);
+        return false;
+      }
+      return true;
+    });
+  }
+}
+
 // --- Request handlers ---
+
+function generateTaskId(): string {
+  return `task_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
 
 async function handleGenerate(
   request: Request,
@@ -423,14 +764,13 @@ async function handleGenerate(
     );
   }
 
-  // Step 0: Check rate limit (without incrementing) — skip for test mode
   const ip = getClientIP(request);
   const url = new URL(request.url);
   const isTestMode = url.searchParams.has("test");
 
+  // Check rate limit before queuing
   if (!isTestMode) {
     const { allowed } = await checkRateLimit(env.RATE_LIMIT, ip);
-
     if (!allowed) {
       return jsonResponse(
         {
@@ -442,56 +782,63 @@ async function handleGenerate(
     }
   }
 
-  // Step 1: Acquire generation lock (queue behind other requests)
-  const lockAcquired = await acquireGenerationLock(env.RATE_LIMIT);
-  if (!lockAcquired) {
+  // Forward to Durable Object
+  const taskId = generateTaskId();
+  const doId = env.GENERATION_QUEUE.idFromName("singleton");
+  const doStub = env.GENERATION_QUEUE.get(doId);
+
+  const doResponse = await doStub.fetch(
+    new Request("https://do/enqueue", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ taskId, description, ip, isTestMode }),
+    })
+  );
+
+  // Forward the DO response (either 202 with taskId/position, or 503 queue_full)
+  const responseBody = await doResponse.text();
+  return new Response(responseBody, {
+    status: doResponse.status,
+    headers: {
+      "Content-Type": "application/json",
+      ...CORS_HEADERS,
+    },
+  });
+}
+
+async function handleStream(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const url = new URL(request.url);
+  const taskId = url.searchParams.get("taskId");
+
+  if (!taskId) {
     return jsonResponse(
-      { error: "queue_full", message: "当前使用人数较多，请稍后再试" },
-      503
+      { error: "missing_taskId", message: "缺少 taskId 参数" },
+      400
     );
   }
 
-  try {
-    // Step 2: Kimi generates two distinct prompt variants
-    const [promptA, promptB] = await synthesizePrompts(
-      description,
-      env.DASHSCOPE_API_KEY
-    );
+  const doId = env.GENERATION_QUEUE.idFromName("singleton");
+  const doStub = env.GENERATION_QUEUE.get(doId);
 
-    // Step 3: Generate icons sequentially to avoid rate limiting
-    const iconUrl1 = await generateIcon(promptA, env.DASHSCOPE_API_KEY);
-    const iconUrl2 = await generateIcon(promptB, env.DASHSCOPE_API_KEY);
+  const doResponse = await doStub.fetch(
+    new Request(`https://do/stream?taskId=${encodeURIComponent(taskId)}`, {
+      method: "GET",
+    })
+  );
 
-    // Step 4: Only increment rate limit AFTER successful generation (skip in test mode)
-    const remaining = isTestMode ? 99 : await incrementRateLimit(env.RATE_LIMIT, ip);
-
-    const response: GenerateSuccessResponse = {
-      icons: [
-        { url: iconUrl1, index: 0 },
-        { url: iconUrl2, index: 1 },
-      ],
-      remaining,
-    };
-
-    return jsonResponse(response, 200);
-  } catch (error) {
-    console.error("Generation failed:", error);
-    const errMsg = error instanceof Error ? error.message : String(error);
-    const isThrottled = errMsg.includes("Throttling") || errMsg.includes("429") || errMsg.includes("[throttled]");
-    if (isThrottled) {
-      return jsonResponse(
-        { error: "throttled", message: "服务器繁忙，请等待 30 秒后重试" },
-        503
-      );
-    }
-    return jsonResponse(
-      { error: "generation_failed", message: "生成失败，请稍后重试" },
-      500
-    );
-  } finally {
-    // Always release lock
-    await releaseGenerationLock(env.RATE_LIMIT);
-  }
+  // Return SSE response with CORS headers
+  return new Response(doResponse.body, {
+    status: doResponse.status,
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      ...CORS_HEADERS,
+    },
+  });
 }
 
 async function handleQuota(
@@ -532,6 +879,10 @@ export default {
 
     if (path === "/api/generate" && request.method === "POST") {
       return handleGenerate(request, env);
+    }
+
+    if (path === "/api/generate/stream" && request.method === "GET") {
+      return handleStream(request, env);
     }
 
     if (path === "/api/quota" && request.method === "GET") {

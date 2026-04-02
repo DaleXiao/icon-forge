@@ -1,15 +1,10 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 
 // --- Types ---
 
 interface IconResult {
   url: string
   index: number
-}
-
-interface GenerateResponse {
-  icons: IconResult[]
-  remaining: number
 }
 
 interface QuotaResponse {
@@ -21,6 +16,13 @@ interface ErrorResponse {
   error: string
   message: string
 }
+
+interface EnqueueResponse {
+  taskId: string
+  position: number
+}
+
+type GenerationPhase = 'idle' | 'queued' | 'generating' | 'complete' | 'error'
 
 // --- Constants ---
 
@@ -96,6 +98,12 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [rateLimited, setRateLimited] = useState(false)
   const [theme, setTheme] = useState<Theme>(getStoredTheme)
+  const [phase, setPhase] = useState<GenerationPhase>('idle')
+  const [queuePosition, setQueuePosition] = useState(0)
+  const [generatingIndex, setGeneratingIndex] = useState(0)
+  const [retryCountdown, setRetryCountdown] = useState(0)
+  const eventSourceRef = useRef<EventSource | null>(null)
+  const retryTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Fetch initial quota
   useEffect(() => {
@@ -123,6 +131,102 @@ export default function App() {
     }
   }
 
+  // Cleanup SSE and timers
+  function cleanup() {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close()
+      eventSourceRef.current = null
+    }
+    if (retryTimerRef.current) {
+      clearInterval(retryTimerRef.current)
+      retryTimerRef.current = null
+    }
+  }
+
+  // Cleanup on unmount
+  useEffect(() => cleanup, [])
+
+  function startSSE(taskId: string) {
+    cleanup()
+    const url = `${API_BASE}/generate/stream?taskId=${encodeURIComponent(taskId)}`
+    const es = new EventSource(url)
+    eventSourceRef.current = es
+
+    es.addEventListener('queued', (e) => {
+      const data = JSON.parse(e.data)
+      setPhase('queued')
+      setQueuePosition(data.position)
+    })
+
+    es.addEventListener('generating', (e) => {
+      const data = JSON.parse(e.data)
+      setPhase('generating')
+      setGeneratingIndex(data.index)
+    })
+
+    es.addEventListener('icon_ready', (e) => {
+      const data = JSON.parse(e.data)
+      setIcons((prev) => {
+        // Avoid duplicates
+        if (prev.some((i) => i.index === data.index)) return prev
+        return [...prev, { url: data.url, index: data.index }].sort((a, b) => a.index - b.index)
+      })
+    })
+
+    es.addEventListener('complete', (e) => {
+      const data = JSON.parse(e.data)
+      setPhase('complete')
+      setLoading(false)
+      setRemaining(data.remaining)
+      if (data.remaining <= 0) setRateLimited(true)
+      // Close before onerror can fire
+      es.onerror = null
+      es.close()
+      eventSourceRef.current = null
+    })
+
+    es.addEventListener('error', (e) => {
+      try {
+        const data = JSON.parse((e as MessageEvent).data)
+        setError(data.message || '生成失败，请重试')
+      } catch {
+        setError('连接中断，请重试')
+      }
+      setPhase('error')
+      setLoading(false)
+      es.onerror = null
+      es.close()
+      eventSourceRef.current = null
+    })
+
+    es.onerror = () => {
+      // Only fire if EventSource is still our active one
+      if (eventSourceRef.current !== es) return
+      setPhase((prev) => {
+        if (prev === 'complete' || prev === 'error') return prev
+        setError('连接中断，请重试')
+        setLoading(false)
+        return 'error'
+      })
+      es.close()
+      eventSourceRef.current = null
+    }
+  }
+
+  function startRetryCountdown(seconds: number) {
+    setRetryCountdown(seconds)
+    if (retryTimerRef.current) clearInterval(retryTimerRef.current)
+    retryTimerRef.current = setInterval(() => {
+      setRetryCountdown((prev) => {
+        if (prev <= 1) {
+          if (retryTimerRef.current) clearInterval(retryTimerRef.current)
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+  }
+
   const handleGenerate = useCallback(async () => {
     const trimmed = description.trim()
     if (!trimmed || trimmed.length < 2) {
@@ -138,6 +242,11 @@ export default function App() {
     setError(null)
     setIcons([])
     setRateLimited(false)
+    setPhase('queued')
+    setQueuePosition(0)
+    setGeneratingIndex(0)
+    setRetryCountdown(0)
+    cleanup()
 
     try {
       const res = await fetch(`${API_BASE}/generate${IS_TEST ? '?test' : ''}`, {
@@ -151,31 +260,43 @@ export default function App() {
         setRateLimited(true)
         setRemaining(0)
         setError(data.message)
+        setPhase('error')
+        setLoading(false)
+        return
+      }
+
+      if (res.status === 503) {
+        const data = await res.json()
+        setError(data.message || '当前使用人数较多，请 30 秒后再试')
+        setPhase('error')
+        setLoading(false)
+        startRetryCountdown(data.retryAfter || 30)
         return
       }
 
       if (res.status === 400) {
         const data: ErrorResponse = await res.json()
         setError(data.message)
+        setPhase('error')
+        setLoading(false)
         return
       }
 
       if (!res.ok) {
         const data: ErrorResponse = await res.json()
         setError(data.message || '生成失败，请重试')
+        setPhase('error')
+        setLoading(false)
         return
       }
 
-      const data: GenerateResponse = await res.json()
-      setIcons(data.icons)
-      setRemaining(data.remaining)
-
-      if (data.remaining <= 0) {
-        setRateLimited(true)
-      }
+      // 202 — task enqueued, start SSE
+      const data: EnqueueResponse = await res.json()
+      setQueuePosition(data.position)
+      startSSE(data.taskId)
     } catch {
       setError('网络错误，请检查连接后重试')
-    } finally {
+      setPhase('error')
       setLoading(false)
     }
   }, [description])
@@ -301,20 +422,36 @@ export default function App() {
         )}
       </div>
 
-      {/* Loading shimmer */}
+      {/* Generation progress + progressive results */}
       {loading && (
         <div className="mt-12 sm:mt-16 w-full max-w-lg animate-fade-in">
-          <div className="grid grid-cols-2 gap-5 sm:gap-6">
-            <ShimmerCard />
-            <ShimmerCard />
-          </div>
-          <p className="text-center text-warm-500 dark:text-warm-600 text-sm font-light mt-5 tracking-wide">
-            正在生成中，预计 10-15 秒...
+          {/* Status text */}
+          <p className="text-center text-warm-500 dark:text-warm-600 text-sm font-light mb-5 tracking-wide">
+            {phase === 'queued' && queuePosition > 1
+              ? `排队中，前面 ${queuePosition - 1} 人...`
+              : phase === 'queued'
+                ? '准备中...'
+                : phase === 'generating'
+                  ? `正在锻造第 ${generatingIndex + 1}/2 张...`
+                  : '生成中...'}
           </p>
+          {/* Grid: show arrived icons + shimmer for pending */}
+          <div className="grid grid-cols-2 gap-5 sm:gap-6">
+            {icons.length > 0 ? (
+              <IconCard icon={icons[0]} onDownload={handleDownload} />
+            ) : (
+              <ShimmerCard />
+            )}
+            {icons.length > 1 ? (
+              <IconCard icon={icons[1]} onDownload={handleDownload} />
+            ) : (
+              <ShimmerCard />
+            )}
+          </div>
         </div>
       )}
 
-      {/* Results */}
+      {/* Completed results */}
       {!loading && icons.length > 0 && (
         <div className="mt-12 sm:mt-16 w-full max-w-lg animate-slide-up">
           <div className="grid grid-cols-2 gap-5 sm:gap-6 stagger">
@@ -326,6 +463,15 @@ export default function App() {
               />
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Retry countdown */}
+      {retryCountdown > 0 && !loading && (
+        <div className="mt-5 text-center animate-fade-in">
+          <p className="text-warm-500 dark:text-warm-600 text-sm font-light">
+            <span className="text-warm-700 dark:text-warm-400 font-medium tabular-nums">{retryCountdown}</span> 秒后可重试
+          </p>
         </div>
       )}
 
