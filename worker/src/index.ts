@@ -16,6 +16,9 @@ interface KimiChatRequest {
   model: string;
   messages: KimiMessage[];
   response_format?: { type: string };
+  temperature?: number;
+  enable_thinking?: boolean;
+  [key: string]: unknown;
 }
 
 interface KimiChatResponse {
@@ -46,6 +49,7 @@ interface QueueTask {
   description: string;
   ip: string;
   isTestMode: boolean;
+  promptModel: string;
   status: "queued" | "generating" | "complete" | "error";
   icons: Array<{ url: string; index: number }>;
   remaining?: number;
@@ -121,6 +125,15 @@ A macOS app icon. A squircle shape with smooth continuous rounded corners, cente
 
 【Example B — format reference】
 A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS the face of a young deer character, viewed straight on. Warm caramel (#D4A574) fur with soft velvety texture. Large friendly dark brown (#4E342E) eyes with tiny white (#FFFFFF) highlight dots. Two small budding antlers in warm tan (#BCAAA4) poking from the top. A cheerful blush of soft peach (#FFCCBC) on both cheeks. Charming toylike quality, crisp clean edges. Vivid saturated colors. Simplified and cheerful. Warm caramel face against soft peach blush. No text, no letters, no watermark.
+
+━━━ SELF-CHECK (perform in your reasoning before outputting JSON) ━━━
+Before writing the final JSON, mentally verify EACH point. If any fails, revise before output:
+☑ RELEVANCE: Would a user immediately say "yes, this icon is for THAT app"? Both variants must pass this test.
+☑ SHAPE: Is the subject something that can naturally fill a rounded square (macOS icon shape)? Avoid tall/narrow objects that fight the square format.
+☑ AESTHETICS: Would this icon look beautiful at 1024x1024 AND recognizable at 64x64? Is the color palette harmonious? Are accent colors intentional, not random?
+☑ SIMPLICITY: 2-3 elements max. Could you describe the icon in one sentence? If not, simplify.
+☑ DIFFERENTIATION: Are the two variants genuinely different visual concepts, not just color swaps?
+☑ MATERIAL FRESHNESS: Are you defaulting to leather/brass/copper? Force yourself to consider at least one unusual material.
 
 ━━━ OUTPUT FORMAT ━━━
 Output ONLY valid JSON (no markdown fences, no commentary):
@@ -212,34 +225,47 @@ async function getRemainingQuota(
 
 function assemblePrompt(v: PromptVariant): string {
   const styleLine = STYLE_MAP[v.styleWord] || STYLE_MAP.toylike;
-  return `A macOS app icon in a single squircle shape with smooth continuous rounded corners — the ENTIRE image is one rounded square, centered on white canvas with padding, occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS ${v.subject}. ${v.visualDetails}. ${styleLine} ${v.contrastColors}. The icon MUST be a single unified squircle shape — no floating objects, no circular frames, no irregular silhouettes. No text, no letters, no watermark.`;
+  return `A macOS app icon shaped exactly like a macOS Sonoma app icon — a rounded square (squircle) with continuous curvature corners at approximately 22% of the icon width, no sharp edges, perfectly smooth transitions. Centered on a clean white canvas with padding, occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The icon itself IS ${v.subject}. ${v.visualDetails}. ${styleLine} ${v.contrastColors}. The shape must strictly follow macOS app icon conventions — a single unified rounded square, no floating objects, no circular frames, no irregular silhouettes. No text, no letters, no watermark.`;
 }
 
 async function synthesizePrompts(
   description: string,
-  apiKey: string
+  apiKey: string,
+  model: string = KIMI_MODEL
 ): Promise<[string, string]> {
   const requestBody: KimiChatRequest = {
-    model: KIMI_MODEL,
-    temperature: 0.7,
+    model,
+    temperature: 0.85,
+    enable_thinking: true,
     messages: [
       { role: "system", content: KIMI_SYSTEM_PROMPT },
       { role: "user", content: description },
     ],
   };
 
-  const response = await fetch(KIMI_API_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(requestBody),
-  });
+  // Retry loop for Kimi API (handles 429 rate limit)
+  let response: Response | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    response = await fetch(KIMI_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+    });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Kimi API error (${response.status}): ${errorText}`);
+    if (response.status === 429 && attempt < 2) {
+      const delay = Math.min(5000 * Math.pow(2, attempt), 20000);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      continue;
+    }
+    break;
+  }
+
+  if (!response || !response.ok) {
+    const errorText = response ? await response.text() : "No response";
+    throw new Error(`Kimi API error (${response?.status}): ${errorText}`);
   }
 
   const data = (await response.json()) as KimiChatResponse;
@@ -368,6 +394,7 @@ export class GenerationQueue {
   private state: DurableObjectState;
   private queue: QueueTask[] = [];
   private sseClients: Map<string, SSEWriter[]> = new Map();
+  private completedTasks: Map<string, QueueTask> = new Map();
   private processing = false;
   private env: Env;
   private lastDashscopeFinishedAt = 0;
@@ -403,6 +430,7 @@ export class GenerationQueue {
       description: string;
       ip: string;
       isTestMode: boolean;
+      promptModel: string;
     };
 
     // Clean up timed-out tasks
@@ -425,6 +453,7 @@ export class GenerationQueue {
       description: body.description,
       ip: body.ip,
       isTestMode: body.isTestMode,
+      promptModel: body.promptModel || KIMI_MODEL,
       status: "queued",
       icons: [],
       createdAt: Date.now(),
@@ -449,8 +478,8 @@ export class GenerationQueue {
       return jsonResponse({ error: "missing_taskId", message: "缺少 taskId 参数" }, 400);
     }
 
-    // Check if task exists or has completed results
-    const task = this.queue.find((t) => t.taskId === taskId);
+    // Check if task exists in queue or completed holding area
+    const task = this.queue.find((t) => t.taskId === taskId) || this.completedTasks.get(taskId) || null;
 
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();
@@ -555,7 +584,7 @@ export class GenerationQueue {
       return jsonResponse({ error: "missing_taskId", message: "缺少 taskId 参数" }, 400);
     }
 
-    const task = this.queue.find((t) => t.taskId === taskId);
+    const task = this.queue.find((t) => t.taskId === taskId) || this.completedTasks.get(taskId) || null;
     if (!task) {
       return jsonResponse({ error: "not_found", message: "任务不存在或已过期" }, 404);
     }
@@ -595,7 +624,8 @@ export class GenerationQueue {
         // Step 1: Synthesize prompts via Kimi
         const [promptA, promptB] = await synthesizePrompts(
           task.description,
-          this.env.DASHSCOPE_API_KEY
+          this.env.DASHSCOPE_API_KEY,
+          task.promptModel
         );
 
         // Step 2: Generate icon 1 (with cooldown)
@@ -643,12 +673,14 @@ export class GenerationQueue {
         this.sendToTask(task.taskId, "error", { message: task.errorMessage });
       }
 
-      // Remove completed/errored task from queue (keep for a bit for reconnection)
-      // We shift it out and rely on the SSE state already sent
+      // Keep completed/errored task in queue briefly for SSE reconnection
+      // Move to a "done" holding area, clean up after 30s
       this.queue.shift();
-
-      // Clean up SSE clients for this task
-      this.closeSseClients(task.taskId);
+      this.completedTasks.set(task.taskId, task);
+      setTimeout(() => {
+        this.completedTasks.delete(task.taskId);
+        this.closeSseClients(task.taskId);
+      }, 30000);
     }
 
     this.processing = false;
@@ -767,6 +799,7 @@ async function handleGenerate(
   const ip = getClientIP(request);
   const url = new URL(request.url);
   const isTestMode = url.searchParams.has("test");
+  const promptModel = KIMI_MODEL;
 
   // Check rate limit before queuing
   if (!isTestMode) {
@@ -791,7 +824,7 @@ async function handleGenerate(
     new Request("https://do/enqueue", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ taskId, description, ip, isTestMode }),
+      body: JSON.stringify({ taskId, description, ip, isTestMode, promptModel }),
     })
   );
 

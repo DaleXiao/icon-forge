@@ -28,7 +28,8 @@ type GenerationPhase = 'idle' | 'queued' | 'generating' | 'complete' | 'error'
 
 const EXAMPLE_PROMPTS = ['小鹿学英语', '极简记账', '旅行地图', '播客电台']
 const API_BASE = import.meta.env.PROD ? 'https://api-icon.weweekly.online/api' : '/api'
-const IS_TEST = new URLSearchParams(window.location.search).has('test')
+const _params = new URLSearchParams(window.location.search)
+const TEST_PARAM = _params.has('test') ? '?test' : ''
 
 // --- Theme helpers ---
 
@@ -100,10 +101,12 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>(getStoredTheme)
   const [phase, setPhase] = useState<GenerationPhase>('idle')
   const [queuePosition, setQueuePosition] = useState(0)
-  const [generatingIndex, setGeneratingIndex] = useState(0)
   const [retryCountdown, setRetryCountdown] = useState(0)
+  const [progress, setProgress] = useState(0)
   const eventSourceRef = useRef<EventSource | null>(null)
   const retryTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const progressRef = useRef(0)
 
   // Fetch initial quota
   useEffect(() => {
@@ -118,7 +121,7 @@ export default function App() {
 
   async function fetchQuota() {
     try {
-      const res = await fetch(`${API_BASE}/quota${IS_TEST ? '?test' : ''}`)
+      const res = await fetch(`${API_BASE}/quota${TEST_PARAM}`)
       if (res.ok) {
         const data: QuotaResponse = await res.json()
         setRemaining(data.remaining)
@@ -141,6 +144,24 @@ export default function App() {
       clearInterval(retryTimerRef.current)
       retryTimerRef.current = null
     }
+    if (progressTimerRef.current) {
+      clearInterval(progressTimerRef.current)
+      progressTimerRef.current = null
+    }
+  }
+
+  function startProgressAnimation(fromPct: number, toPct: number) {
+    if (progressTimerRef.current) clearInterval(progressTimerRef.current)
+    progressRef.current = fromPct
+    setProgress(fromPct)
+    // Asymptotic curve: fast at start, slows down but never stops
+    progressTimerRef.current = setInterval(() => {
+      const remaining = toPct - progressRef.current
+      // Move 3% of remaining distance each tick, minimum 0.1
+      const step = Math.max(remaining * 0.03, 0.1)
+      progressRef.current = Math.min(progressRef.current + step, toPct - 0.5)
+      setProgress(Math.round(progressRef.current))
+    }, 250)
   }
 
   // Cleanup on unmount
@@ -161,28 +182,48 @@ export default function App() {
     es.addEventListener('generating', (e) => {
       const data = JSON.parse(e.data)
       setPhase('generating')
-      setGeneratingIndex(data.index)
+      // Start progress animation: icon 0 → 0-45%, icon 1 → 50-95%
+      if (data.index === 0) {
+        startProgressAnimation(0, 48)
+      } else {
+        startProgressAnimation(50, 98)
+      }
     })
 
     es.addEventListener('icon_ready', (e) => {
       const data = JSON.parse(e.data)
       setIcons((prev) => {
-        // Avoid duplicates
         if (prev.some((i) => i.index === data.index)) return prev
         return [...prev, { url: data.url, index: data.index }].sort((a, b) => a.index - b.index)
       })
+      // Snap progress on icon completion
+      if (progressTimerRef.current) clearInterval(progressTimerRef.current)
+      if (data.index === 0) {
+        progressRef.current = 50
+        setProgress(50)
+      } else {
+        progressRef.current = 100
+        setProgress(100)
+      }
     })
 
     es.addEventListener('complete', (e) => {
       const data = JSON.parse(e.data)
-      setPhase('complete')
-      setLoading(false)
+      // Snap to 100% first, then fade out
+      if (progressTimerRef.current) clearInterval(progressTimerRef.current)
+      progressRef.current = 100
+      setProgress(100)
       setRemaining(data.remaining)
       if (data.remaining <= 0) setRateLimited(true)
-      // Close before onerror can fire
+      // Close SSE before onerror can fire
       es.onerror = null
       es.close()
       eventSourceRef.current = null
+      // Delay phase transition so user sees 100%
+      setTimeout(() => {
+        setPhase('complete')
+        setLoading(false)
+      }, 800)
     })
 
     es.addEventListener('error', (e) => {
@@ -244,12 +285,13 @@ export default function App() {
     setRateLimited(false)
     setPhase('queued')
     setQueuePosition(0)
-    setGeneratingIndex(0)
     setRetryCountdown(0)
+    setProgress(0)
+    progressRef.current = 0
     cleanup()
 
     try {
-      const res = await fetch(`${API_BASE}/generate${IS_TEST ? '?test' : ''}`, {
+      const res = await fetch(`${API_BASE}/generate${TEST_PARAM}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ description: trimmed }),
@@ -432,7 +474,7 @@ export default function App() {
               : phase === 'queued'
                 ? '准备中...'
                 : phase === 'generating'
-                  ? `正在锻造第 ${generatingIndex + 1}/2 张...`
+                  ? <>正在锻造 <span className="text-warm-700 dark:text-warm-400 font-medium tabular-nums">{progress}%</span></>
                   : '生成中...'}
           </p>
           {/* Grid: show arrived icons + shimmer for pending */}
@@ -448,6 +490,10 @@ export default function App() {
               <ShimmerCard />
             )}
           </div>
+          {/* Don't refresh hint */}
+          <p className="text-center text-warm-400 dark:text-warm-700 text-xs font-light mt-4 tracking-wide">
+            请不要关闭或刷新页面
+          </p>
         </div>
       )}
 
