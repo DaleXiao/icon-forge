@@ -13,5 +13,14 @@ ENVIRONMENT = "production"
 binding = "RATE_LIMIT"
 id = "3a4327db33b842f893ab3d2dcf6cf081"
 
+[durable_objects]
+bindings = [
+  { name = "GENERATION_QUEUE", class_name = "GenerationQueue" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["GenerationQueue"]
+
 # Secrets (set via `wrangler secret put`):
 # - DASHSCOPE_API_KEY
