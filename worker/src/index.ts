@@ -67,7 +67,7 @@ interface SSEWriter {
 
 const DAILY_LIMIT = 3;
 const KIMI_MODEL = "kimi-k2.5";
-const DASHSCOPE_MODEL = "qwen-image-2.0-pro";
+const DASHSCOPE_MODEL = "wan2.7-image-pro";
 const DASHSCOPE_SUBMIT_URL =
   "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
 const KIMI_API_URL =
@@ -78,7 +78,7 @@ const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
-const MAX_QUEUE_SIZE = 3;
+const MAX_QUEUE_SIZE = 10;
 const TASK_TIMEOUT_MS = 120_000;
 
 const STYLE_MAP: Record<StyleWord, string> = {
@@ -118,13 +118,43 @@ Choose a styleWord for each variant based on the app's nature:
 The two variants MAY use different styleWords if appropriate.
 
 ━━━ FEW-SHOT EXAMPLES ━━━
-Study the FORMAT and SPECIFICITY only. Do NOT copy these metaphors — invent your own.
+Study the REASONING and FORMAT. Do NOT copy these metaphors — invent your own.
 
-【Example A — format reference】
-A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS the front grille of a vintage desk microphone, viewed straight on. Deep vivid blue (#1565C0) metal body with fine circular mesh pattern. A polished silver-white (#ECEFF1) ring frames the grille. A warm gold (#FFB300) center dot glows subtly. Refined modern with clean 3D volumes and layered depth. Bold saturated colors. Smooth pristine surfaces. Deep blue mesh against silver ring and gold center dot. No text, no letters, no watermark.
+【Example 1: "Weather forecast app"】
+→ Reasoning: Weather = looking out a window at the sky. An airplane window is unexpected yet instantly evokes sky/weather.
+→ Output subject: "an airplane window viewed from inside"
+→ Output visualDetails: "viewed straight on. A soft warm white plastic window frame fills the squircle, with a rounded oval opening in the center. Through the window, a vivid blue sky with fluffy white clouds below. The window frame has a precise inner bezel ring with subtle thickness. The upper-right edge of a translucent window shade is slightly pulled down, curling with a realistic fold."
+→ Output contrastColors: "Vivid blue sky against warm white frame and translucent shade"
 
-【Example B — format reference】
-A macOS app icon. A squircle shape with smooth continuous rounded corners, centered on white canvas with padding — occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS the face of a young deer character, viewed straight on. Warm caramel (#D4A574) fur with soft velvety texture. Large friendly dark brown (#4E342E) eyes with tiny white (#FFFFFF) highlight dots. Two small budding antlers in warm tan (#BCAAA4) poking from the top. A cheerful blush of soft peach (#FFCCBC) on both cheeks. Charming toylike quality, crisp clean edges. Vivid saturated colors. Simplified and cheerful. Warm caramel face against soft peach blush. No text, no letters, no watermark.
+【Example 2: "Writing tool / text editor"】
+→ Reasoning: Writing = typewriter. Top-down view of a typewriter naturally fills the squircle.
+→ Output subject: "a typewriter viewed from above"
+→ Output visualDetails: "viewed from above. A rich dark charcoal (#2D3436) body fills the squircle. Rows of small round keys with vivid green letter caps are neatly arranged across the lower two-thirds. A white sheet of paper peeks from the top edge with a few lines of tiny dark text. A slim warm gold carriage return lever extends to the right. The round keys catch soft highlights."
+→ Output contrastColors: "Green key caps and white paper pop against the dark body"
+
+【Example 3: "Markdown note-taking app"】
+→ Reasoning: Notes = an open notebook page. A coral # symbol anchors the Markdown identity.
+→ Output subject: "an open notebook page viewed from the front"
+→ Output visualDetails: "viewed from the front. A warm cream (#FFF8E7) paper surface fills the squircle with faint horizontal ruled lines. On the page, several lines of text in different sizes — a bold large dark brown line at the top for a heading, two thinner light brown lines below, and a vivid coral red (#FF5722) hashtag symbol at the start of the heading. A slim warm wood pen rests diagonally across the lower-right corner. A thin warm gold spine line runs along the left edge."
+→ Output contrastColors: "Coral markdown symbol and dark heading pop against the warm cream page"
+
+【Example 4: "Video recording / camera app"】
+→ Reasoning: Video = camera lens. A lens viewed straight on is a circle inside a square — perfect squircle fit.
+→ Output subject: "the front face of a camera lens viewed straight on"
+→ Output visualDetails: "viewed straight on. A deep charcoal (#2D3436) outer ring fills the squircle. Inside, a vivid deep blue (#1565C0) glass lens element reflects a soft highlight streak diagonally across its surface. At the center, a smaller dark iris ring. A tiny vivid red recording indicator light sits at the top-right edge of the outer ring."
+→ Output contrastColors: "The blue lens glow and red light pop against deep charcoal"
+
+【Example 5: "Travel map / navigation app"】
+→ Reasoning: Travel = a folded paper map. Fold creases + route line = instant recognition.
+→ Output subject: "a folded paper map viewed from above"
+→ Output visualDetails: "viewed from above. The warm cream-white paper surface fills the squircle with subtle fold creases forming a grid. A vivid red dotted route line winds across the surface from lower-left to upper-right, ending at a bright red location pin marker. A small warm gold compass rose sits in one corner."
+→ Output contrastColors: "Vivid red route and pin pop against the cream map"
+
+【Example 6: "Subscription management / wallet app"】
+→ Reasoning: Subscriptions = cards in a wallet. Colorful card edges peeking out = visual shorthand for multiple subscriptions.
+→ Output subject: "the front of a leather card wallet"
+→ Output visualDetails: "viewed from the front. A rich dark charcoal (#2D3436) leather surface fills the entire squircle with subtle material warmth. From the top edge, five colorful subscription cards peek out in a neat fan arrangement — each showing just a thin strip of vivid color: bright blue, coral red, sunny yellow, fresh green, and warm purple. A small warm gold snap button sits centered in the lower third."
+→ Output contrastColors: "The vivid card colors pop cheerfully against the dark wallet"
 
 ━━━ SELF-CHECK (perform in your reasoning before outputting JSON) ━━━
 Before writing the final JSON, mentally verify EACH point. If any fails, revise before output:
@@ -225,7 +255,7 @@ async function getRemainingQuota(
 
 function assemblePrompt(v: PromptVariant): string {
   const styleLine = STYLE_MAP[v.styleWord] || STYLE_MAP.toylike;
-  return `A macOS app icon shaped exactly like a macOS Sonoma app icon — a rounded square (squircle) with continuous curvature corners at approximately 22% of the icon width, no sharp edges, perfectly smooth transitions. Centered on a clean white canvas with padding, occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The icon itself IS ${v.subject}. ${v.visualDetails}. ${styleLine} ${v.contrastColors}. The shape must strictly follow macOS app icon conventions — a single unified rounded square, no floating objects, no circular frames, no irregular silhouettes. No text, no letters, no watermark.`;
+  return `A macOS Sonoma app icon shaped exactly as a rounded square (squircle) with continuous curvature corners at approximately 22% of the icon width, no sharp edges, perfectly smooth transitions — a single unified shape, no floating objects, no circular frames, no irregular silhouettes. Centered on white canvas with padding, occupying about 80% of the canvas. Flat front face, slight edge thickness, soft drop shadow beneath. The squircle itself IS ${v.subject}. ${v.visualDetails}. ${v.contrastColors}. ${styleLine} The shape must strictly follow macOS app icon conventions — one solid rounded square. No text, no letters, no watermark.`;
 }
 
 async function synthesizePrompts(
@@ -235,7 +265,7 @@ async function synthesizePrompts(
 ): Promise<[string, string]> {
   const requestBody: KimiChatRequest = {
     model,
-    temperature: 0.85,
+    temperature: 0.8,
     enable_thinking: true,
     messages: [
       { role: "system", content: KIMI_SYSTEM_PROMPT },
@@ -377,9 +407,7 @@ async function generateIcon(
 
     const imageUrl = data.output?.choices?.[0]?.message?.content?.[0]?.image;
     if (!imageUrl) {
-      throw new Error(
-        `Dashscope returned no image: ${JSON.stringify(data)}`
-      );
+      throw new Error(`Dashscope returned no image: ${JSON.stringify(data)}`);
     }
 
     return imageUrl;
@@ -680,7 +708,7 @@ export class GenerationQueue {
       setTimeout(() => {
         this.completedTasks.delete(task.taskId);
         this.closeSseClients(task.taskId);
-      }, 30000);
+      }, 300000); // 5 minutes — allows mobile Safari to reconnect after lock screen
     }
 
     this.processing = false;

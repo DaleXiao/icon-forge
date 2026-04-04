@@ -107,6 +107,8 @@ export default function App() {
   const retryTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const progressRef = useRef(0)
+  const sseRetriesRef = useRef(0)
+  const currentTaskIdRef = useRef<string | null>(null)
 
   // Fetch initial quota
   useEffect(() => {
@@ -167,8 +169,27 @@ export default function App() {
   // Cleanup on unmount
   useEffect(() => cleanup, [])
 
+  // Reconnect SSE when page becomes visible again (mobile Safari lock/unlock)
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && currentTaskIdRef.current) {
+        // Close stale connection if any, then reconnect
+        if (eventSourceRef.current) {
+          eventSourceRef.current.onerror = null
+          eventSourceRef.current.close()
+          eventSourceRef.current = null
+        }
+        sseRetriesRef.current = 0
+        startSSE(currentTaskIdRef.current)
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
+  }, [])
+
   function startSSE(taskId: string) {
     cleanup()
+    currentTaskIdRef.current = taskId
     const url = `${API_BASE}/generate/stream?taskId=${encodeURIComponent(taskId)}`
     const es = new EventSource(url)
     eventSourceRef.current = es
@@ -219,6 +240,7 @@ export default function App() {
       es.onerror = null
       es.close()
       eventSourceRef.current = null
+      currentTaskIdRef.current = null
       // Delay phase transition so user sees 100%
       setTimeout(() => {
         setPhase('complete')
@@ -238,19 +260,30 @@ export default function App() {
       es.onerror = null
       es.close()
       eventSourceRef.current = null
+      currentTaskIdRef.current = null
     })
 
     es.onerror = () => {
       // Only fire if EventSource is still our active one
       if (eventSourceRef.current !== es) return
-      setPhase((prev) => {
-        if (prev === 'complete' || prev === 'error') return prev
-        setError('连接中断，请重试')
-        setLoading(false)
-        return 'error'
-      })
       es.close()
       eventSourceRef.current = null
+      // Auto-reconnect up to 3 times (handles mobile Safari background disconnect)
+      if (sseRetriesRef.current < 3 && currentTaskIdRef.current) {
+        sseRetriesRef.current++
+        setTimeout(() => {
+          if (currentTaskIdRef.current) {
+            startSSE(currentTaskIdRef.current)
+          }
+        }, 1000)
+      } else {
+        setPhase((prev) => {
+          if (prev === 'complete' || prev === 'error') return prev
+          setError('连接中断，请重试')
+          setLoading(false)
+          return 'error'
+        })
+      }
     }
   }
 
@@ -288,6 +321,8 @@ export default function App() {
     setRetryCountdown(0)
     setProgress(0)
     progressRef.current = 0
+    sseRetriesRef.current = 0
+    currentTaskIdRef.current = null
     cleanup()
 
     try {
@@ -474,7 +509,7 @@ export default function App() {
               : phase === 'queued'
                 ? '准备中...'
                 : phase === 'generating'
-                  ? <>正在锻造 <span className="text-warm-700 dark:text-warm-400 font-medium tabular-nums">{progress}%</span></>
+                  ? <><svg className="inline-block w-3.5 h-3.5 mr-1.5 -mt-px animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="4.22" y1="4.22" x2="6.34" y2="6.34"/><line x1="17.66" y1="17.66" x2="19.78" y2="19.78"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/><line x1="4.22" y1="19.78" x2="6.34" y2="17.66"/><line x1="17.66" y1="6.34" x2="19.78" y2="4.22"/></svg>正在锻造 <span className="text-warm-700 dark:text-warm-400 font-medium tabular-nums">{progress}%</span></>
                   : '生成中...'}
           </p>
           {/* Grid: show arrived icons + shimmer for pending */}
