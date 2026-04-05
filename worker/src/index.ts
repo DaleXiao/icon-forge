@@ -656,23 +656,19 @@ export class GenerationQueue {
           task.promptModel
         );
 
-        // Step 2: Generate icon 1 (with cooldown)
+        // Step 2: Generate both icons concurrently
         await this.waitForCooldown();
-        const iconUrl1 = await generateIcon(promptA, this.env.DASHSCOPE_API_KEY);
+        const genIcon = async (prompt: string, index: number) => {
+          const url = await generateIcon(prompt, this.env.DASHSCOPE_API_KEY);
+          task.icons.push({ url, index });
+          this.sendToTask(task.taskId, "icon_ready", { url, index });
+          return url;
+        };
+        await Promise.all([
+          genIcon(promptA, 0),
+          genIcon(promptB, 1),
+        ]);
         this.lastDashscopeFinishedAt = Date.now();
-        task.icons.push({ url: iconUrl1, index: 0 });
-        this.sendToTask(task.taskId, "icon_ready", { url: iconUrl1, index: 0 });
-
-        // Notify generating icon 2
-        task.currentIconIndex = 1;
-        this.sendToTask(task.taskId, "generating", { index: 1, total: 2 });
-
-        // Step 3: Generate icon 2 (with cooldown)
-        await this.waitForCooldown();
-        const iconUrl2 = await generateIcon(promptB, this.env.DASHSCOPE_API_KEY);
-        this.lastDashscopeFinishedAt = Date.now();
-        task.icons.push({ url: iconUrl2, index: 1 });
-        this.sendToTask(task.taskId, "icon_ready", { url: iconUrl2, index: 1 });
 
         // Step 4: Increment rate limit (deferred billing)
         const remaining = task.isTestMode
