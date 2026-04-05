@@ -200,32 +200,33 @@ export default function App() {
       setQueuePosition(data.position)
     })
 
-    es.addEventListener('generating', (e) => {
-      const data = JSON.parse(e.data)
+    es.addEventListener('generating', () => {
       setPhase('generating')
-      // Start progress animation: icon 0 → 0-45%, icon 1 → 50-95%
-      if (data.index === 0) {
-        startProgressAnimation(0, 48)
-      } else {
-        startProgressAnimation(50, 98)
-      }
+      // Both icons generate concurrently — animate 0→95% over the full duration
+      startProgressAnimation(0, 95)
     })
 
     es.addEventListener('icon_ready', (e) => {
       const data = JSON.parse(e.data)
       setIcons((prev) => {
         if (prev.some((i) => i.index === data.index)) return prev
-        return [...prev, { url: data.url, index: data.index }].sort((a, b) => a.index - b.index)
+        const updated = [...prev, { url: data.url, index: data.index }].sort((a, b) => a.index - b.index)
+        // When first icon arrives, bump progress to at least 50%
+        if (updated.length === 1 && progressRef.current < 50) {
+          if (progressTimerRef.current) clearInterval(progressTimerRef.current)
+          progressRef.current = 55
+          setProgress(55)
+          // Continue animating toward 95%
+          startProgressAnimation(55, 95)
+        }
+        // When both icons arrive, snap to 100%
+        if (updated.length >= 2) {
+          if (progressTimerRef.current) clearInterval(progressTimerRef.current)
+          progressRef.current = 100
+          setProgress(100)
+        }
+        return updated
       })
-      // Snap progress on icon completion
-      if (progressTimerRef.current) clearInterval(progressTimerRef.current)
-      if (data.index === 0) {
-        progressRef.current = 50
-        setProgress(50)
-      } else {
-        progressRef.current = 100
-        setProgress(100)
-      }
     })
 
     es.addEventListener('complete', (e) => {
