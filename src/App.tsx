@@ -155,7 +155,7 @@ export default function App() {
   function startProgressAnimation(fromPct: number, toPct: number) {
     if (progressTimerRef.current) clearInterval(progressTimerRef.current)
     progressRef.current = fromPct
-    setProgress(fromPct)
+    setProgress(Math.round(fromPct))
     // Asymptotic curve: fast at start, slows down but never stops
     progressTimerRef.current = setInterval(() => {
       const remaining = toPct - progressRef.current
@@ -202,8 +202,9 @@ export default function App() {
 
     es.addEventListener('generating', () => {
       setPhase('generating')
-      // Both icons generate concurrently — animate 0→95% over the full duration
-      startProgressAnimation(0, 95)
+      // On reconnect, resume from current progress instead of resetting to 0
+      const resumeFrom = Math.max(progressRef.current, 0)
+      startProgressAnimation(resumeFrom, 95)
     })
 
     es.addEventListener('icon_ready', (e) => {
@@ -578,9 +579,9 @@ export default function App() {
 
       {/* Footer */}
       <footer className="mt-auto pt-20 pb-8">
-        <p className="text-warm-400 dark:text-warm-700 text-xs font-light tracking-wider">
-          weweekly.online
-        </p>
+        <a href="https://weweekly.online" target="_blank" rel="noopener" className="text-warm-400 dark:text-warm-700 text-xs font-light tracking-wider hover:text-warm-500 dark:hover:text-warm-500 transition-colors" style={{textDecoration:'none'}}>
+          Tinker Lab / 折腾实验室
+        </a>
       </footer>
     </div>
   )
