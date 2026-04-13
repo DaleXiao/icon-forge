@@ -7,21 +7,21 @@ export interface Env {
 
 // --- Types ---
 
-interface KimiMessage {
+interface PromptMessage {
   role: "system" | "user" | "assistant";
   content: string;
 }
 
-interface KimiChatRequest {
+interface PromptChatRequest {
   model: string;
-  messages: KimiMessage[];
+  messages: PromptMessage[];
   response_format?: { type: string };
   temperature?: number;
   enable_thinking?: boolean;
   [key: string]: unknown;
 }
 
-interface KimiChatResponse {
+interface PromptChatResponse {
   choices: Array<{
     message: {
       content: string;
@@ -66,11 +66,13 @@ interface SSEWriter {
 // --- Constants ---
 
 const DAILY_LIMIT = 3;
-const KIMI_MODEL = "kimi-k2.5";
+const PROMPT_MODEL = "qwen3.6-plus";
 const DASHSCOPE_MODEL = "wan2.7-image-pro";
 const DASHSCOPE_SUBMIT_URL =
   "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
-const KIMI_API_URL =
+const PROMPT_API_URL =
+  "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
+const COMPAT_API_URL =
   "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -89,7 +91,7 @@ const STYLE_MAP: Record<StyleWord, string> = {
   playful: 'Charming toylike quality, crisp clean edges. Vivid saturated colors. Fun and delightful.',
 };
 
-const KIMI_SYSTEM_PROMPT = `You are an elite macOS/iOS app icon designer. Given a short app description (any language), you produce TWO genuinely different visual concepts as structured JSON.
+const SYSTEM_PROMPT = `You are an elite macOS/iOS app icon designer. Given a short app description (any language), you produce TWO genuinely different visual concepts as structured JSON.
 
 ━━━ CORE PRINCIPLE ━━━
 "The squircle itself IS ___." — The entire icon shape BECOMES the physical object. NOT "a squircle with X drawn on it". The squircle IS a vintage radio, IS a leather journal, IS a terracotta pot.
@@ -261,22 +263,22 @@ function assemblePrompt(v: PromptVariant): string {
 async function synthesizePrompts(
   description: string,
   apiKey: string,
-  model: string = KIMI_MODEL
+  model: string = PROMPT_MODEL
 ): Promise<[string, string]> {
-  const requestBody: KimiChatRequest = {
+  const requestBody: PromptChatRequest = {
     model,
     temperature: 0.8,
     enable_thinking: true,
     messages: [
-      { role: "system", content: KIMI_SYSTEM_PROMPT },
+      { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: description },
     ],
   };
 
-  // Retry loop for Kimi API (handles 429 rate limit)
+  // Retry loop for prompt API (handles 429 rate limit)
   let response: Response | null = null;
   for (let attempt = 0; attempt < 3; attempt++) {
-    response = await fetch(KIMI_API_URL, {
+    response = await fetch(PROMPT_API_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -295,14 +297,14 @@ async function synthesizePrompts(
 
   if (!response || !response.ok) {
     const errorText = response ? await response.text() : "No response";
-    throw new Error(`Kimi API error (${response?.status}): ${errorText}`);
+    throw new Error(`Prompt API error (${response?.status}): ${errorText}`);
   }
 
-  const data = (await response.json()) as KimiChatResponse;
+  const data = (await response.json()) as PromptChatResponse;
   const content = data.choices?.[0]?.message?.content;
 
   if (!content) {
-    throw new Error("Kimi API returned empty content");
+    throw new Error("Prompt API returned empty content");
   }
 
   let parsed: PromptResponse;
@@ -315,7 +317,7 @@ async function synthesizePrompts(
     }
     parsed = JSON.parse(cleaned) as PromptResponse;
   } catch {
-    throw new Error(`Failed to parse Kimi response as JSON: ${content}`);
+    throw new Error(`Failed to parse prompt response as JSON: ${content}`);
   }
 
   const validStyleWords: StyleWord[] = ['toylike', 'refined', 'modern', 'minimal', 'playful'];
@@ -329,7 +331,7 @@ async function synthesizePrompts(
       !v?.styleWord
     ) {
       throw new Error(
-        `Kimi response missing required fields in ${key}: ${JSON.stringify(v)}`
+        `Prompt response missing required fields in ${key}: ${JSON.stringify(v)}`
       );
     }
     if (!validStyleWords.includes(v.styleWord)) {
@@ -346,7 +348,7 @@ async function generateIcon(
   prompt: string,
   apiKey: string,
   maxRetries: number = 5
-): Promise<string> {
+): Promise<string[]> {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const response = await fetch(DASHSCOPE_SUBMIT_URL, {
       method: "POST",
@@ -366,7 +368,7 @@ async function generateIcon(
         },
         parameters: {
           size: "1024*1024",
-          n: 1,
+          n: 2,
           seed: Math.floor(Math.random() * 2147483647),
           prompt_extend: false,
           watermark: false,
@@ -405,15 +407,73 @@ async function generateIcon(
       throw new Error(`Dashscope API error: ${data.code} - ${data.message}`);
     }
 
-    const imageUrl = data.output?.choices?.[0]?.message?.content?.[0]?.image;
-    if (!imageUrl) {
+    const choices = data.output?.choices || [];
+    const imageUrls: string[] = [];
+    for (const choice of choices) {
+      const image = choice?.message?.content?.[0]?.image;
+      if (image) imageUrls.push(image);
+    }
+    if (imageUrls.length === 0) {
       throw new Error(`Dashscope returned no image: ${JSON.stringify(data)}`);
     }
 
-    return imageUrl;
+    return imageUrls;
   }
 
   throw new Error("[throttled] Dashscope image generation failed after retries");
+}
+
+// --- Background removal ---
+
+async function removeBackground(imageUrl: string, apiKey: string): Promise<string> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const response = await fetch(COMPAT_API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: "wan2.7-image-pro",
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "image_url", image_url: { url: imageUrl } },
+                {
+                  type: "text",
+                  text: "Remove the white background completely. Make the background fully transparent. Keep only the rounded square (squircle) icon shape with all its details intact.",
+                },
+              ],
+            },
+          ],
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`removeBackground HTTP ${response.status}`);
+      }
+
+      const data = (await response.json()) as {
+        choices?: Array<{
+          message?: {
+            content?: Array<{ type?: string; image?: string }>;
+          };
+        }>;
+      };
+
+      const content = data.choices?.[0]?.message?.content;
+      if (!content) throw new Error("No content in removeBackground response");
+      const imageItem = content.find((item) => item.type === "image");
+      if (!imageItem?.image) throw new Error("No image in removeBackground response");
+      return imageItem.image;
+    } catch (e) {
+      if (attempt >= 2) throw e;
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+  }
+  throw new Error("removeBackground failed after retries");
 }
 
 // --- Durable Object: GenerationQueue ---
@@ -481,7 +541,7 @@ export class GenerationQueue {
       description: body.description,
       ip: body.ip,
       isTestMode: body.isTestMode,
-      promptModel: body.promptModel || KIMI_MODEL,
+      promptModel: body.promptModel || PROMPT_MODEL,
       status: "queued",
       icons: [],
       createdAt: Date.now(),
@@ -533,7 +593,7 @@ export class GenerationQueue {
           } else if (task.status === "generating") {
             await writer.write(
               encoder.encode(
-                `event: generating\ndata: ${JSON.stringify({ index: task.currentIconIndex ?? 0, total: 2 })}\n\n`
+                `event: generating\ndata: ${JSON.stringify({ index: task.currentIconIndex ?? 0, total: 4 })}\n\n`
               )
             );
             // Send any already-completed icons
@@ -647,26 +707,38 @@ export class GenerationQueue {
         // Mark as generating
         task.status = "generating";
         task.currentIconIndex = 0;
-        this.sendToTask(task.taskId, "generating", { index: 0, total: 2 });
+        this.sendToTask(task.taskId, "generating", { index: 0, total: 4 });
 
-        // Step 1: Synthesize prompts via Kimi
+        // Step 1: Synthesize prompts
         const [promptA, promptB] = await synthesizePrompts(
           task.description,
           this.env.DASHSCOPE_API_KEY,
           task.promptModel
         );
 
-        // Step 2: Generate both icons concurrently
+        // Step 2: Generate icons (n=2 each, 4 total)
         await this.waitForCooldown();
-        const genIcon = async (prompt: string, index: number) => {
-          const url = await generateIcon(prompt, this.env.DASHSCOPE_API_KEY);
-          task.icons.push({ url, index });
-          this.sendToTask(task.taskId, "icon_ready", { url, index });
-          return url;
+        const genIcons = async (prompt: string, startIndex: number) => {
+          const urls = await generateIcon(prompt, this.env.DASHSCOPE_API_KEY);
+          const results: string[] = [];
+          for (let i = 0; i < urls.length; i++) {
+            const index = startIndex + i;
+            let finalUrl = urls[i];
+            // Remove background
+            try {
+              finalUrl = await removeBackground(urls[i], this.env.DASHSCOPE_API_KEY);
+            } catch (e) {
+              console.warn(`removeBackground failed for index ${index}, using original:`, e);
+            }
+            task.icons.push({ url: finalUrl, index });
+            this.sendToTask(task.taskId, "icon_ready", { url: finalUrl, index });
+            results.push(finalUrl);
+          }
+          return results;
         };
         await Promise.all([
-          genIcon(promptA, 0),
-          genIcon(promptB, 1),
+          genIcons(promptA, 0),
+          genIcons(promptB, 2),
         ]);
         this.lastDashscopeFinishedAt = Date.now();
 
@@ -823,7 +895,7 @@ async function handleGenerate(
   const ip = getClientIP(request);
   const url = new URL(request.url);
   const isTestMode = url.searchParams.has("test");
-  const promptModel = KIMI_MODEL;
+  const promptModel = PROMPT_MODEL;
 
   // Check rate limit before queuing
   if (!isTestMode) {
