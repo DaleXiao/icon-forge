@@ -212,16 +212,26 @@ export default function App() {
       setIcons((prev) => {
         if (prev.some((i) => i.index === data.index)) return prev
         const updated = [...prev, { url: data.url, index: data.index }].sort((a, b) => a.index - b.index)
-        // When first icon arrives, bump progress to at least 50%
-        if (updated.length === 1 && progressRef.current < 50) {
+        if (updated.length === 1 && progressRef.current < 30) {
           if (progressTimerRef.current) clearInterval(progressTimerRef.current)
-          progressRef.current = 55
-          setProgress(55)
-          // Continue animating toward 95%
-          startProgressAnimation(55, 95)
+          progressRef.current = 30
+          setProgress(30)
+          startProgressAnimation(30, 95)
         }
-        // When both icons arrive, snap to 100%
-        if (updated.length >= 2) {
+        if (updated.length === 2 && progressRef.current < 50) {
+          if (progressTimerRef.current) clearInterval(progressTimerRef.current)
+          progressRef.current = 50
+          setProgress(50)
+          startProgressAnimation(50, 95)
+        }
+        if (updated.length === 3 && progressRef.current < 70) {
+          if (progressTimerRef.current) clearInterval(progressTimerRef.current)
+          progressRef.current = 70
+          setProgress(70)
+          startProgressAnimation(70, 95)
+        }
+        // When all 4 icons arrive, snap to 100%
+        if (updated.length >= 4) {
           if (progressTimerRef.current) clearInterval(progressTimerRef.current)
           progressRef.current = 100
           setProgress(100)
@@ -526,6 +536,16 @@ export default function App() {
             ) : (
               <ShimmerCard />
             )}
+            {icons.length > 2 ? (
+              <IconCard icon={icons[2]} onDownload={handleDownload} />
+            ) : (
+              <ShimmerCard />
+            )}
+            {icons.length > 3 ? (
+              <IconCard icon={icons[3]} onDownload={handleDownload} />
+            ) : (
+              <ShimmerCard />
+            )}
           </div>
           {/* Don't refresh hint */}
           <p className="text-center text-warm-400 dark:text-warm-700 text-xs font-light mt-4 tracking-wide">
@@ -634,7 +654,7 @@ function IconCard({
   return (
     <div className="icon-card rounded-2.5xl overflow-hidden bg-white dark:bg-warm-900/60 border border-warm-200 dark:border-warm-800/30 shadow-warm-sm dark:shadow-card animate-slide-up">
       {/* Icon display area — matches page bg in light, dark in dark mode */}
-      <div className="aspect-square bg-[#FAFAF7] dark:bg-warm-950 p-5">
+      <div className="aspect-square checkerboard p-5">
         <img
           src={icon.url}
           alt={`Generated icon ${icon.index + 1}`}
