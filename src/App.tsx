@@ -26,7 +26,7 @@ type GenerationPhase = 'idle' | 'queued' | 'generating' | 'complete' | 'error'
 
 // --- Constants ---
 
-const EXAMPLE_PROMPTS = ['小鹿学英语', '极简记账', '旅行地图', '播客电台']
+const EXAMPLE_PROMPTS = ['记事本', '语音输入法', '旅行地图', '播客电台']
 const API_BASE = import.meta.env.PROD ? 'https://api-icon.weweekly.online/api' : '/api'
 const _params = new URLSearchParams(window.location.search)
 const TEST_PARAM = _params.has('test') ? '?test' : ''
@@ -212,26 +212,14 @@ export default function App() {
       setIcons((prev) => {
         if (prev.some((i) => i.index === data.index)) return prev
         const updated = [...prev, { url: data.url, index: data.index }].sort((a, b) => a.index - b.index)
-        if (updated.length === 1 && progressRef.current < 30) {
-          if (progressTimerRef.current) clearInterval(progressTimerRef.current)
-          progressRef.current = 30
-          setProgress(30)
-          startProgressAnimation(30, 95)
-        }
-        if (updated.length === 2 && progressRef.current < 50) {
+        if (updated.length === 1 && progressRef.current < 50) {
           if (progressTimerRef.current) clearInterval(progressTimerRef.current)
           progressRef.current = 50
           setProgress(50)
           startProgressAnimation(50, 95)
         }
-        if (updated.length === 3 && progressRef.current < 70) {
-          if (progressTimerRef.current) clearInterval(progressTimerRef.current)
-          progressRef.current = 70
-          setProgress(70)
-          startProgressAnimation(70, 95)
-        }
-        // When all 4 icons arrive, snap to 100%
-        if (updated.length >= 4) {
+        // When all 2 icons arrive, snap to 100%
+        if (updated.length >= 2) {
           if (progressTimerRef.current) clearInterval(progressTimerRef.current)
           progressRef.current = 100
           setProgress(100)
@@ -533,16 +521,6 @@ export default function App() {
             )}
             {icons.length > 1 ? (
               <IconCard icon={icons[1]} onDownload={handleDownload} />
-            ) : (
-              <ShimmerCard />
-            )}
-            {icons.length > 2 ? (
-              <IconCard icon={icons[2]} onDownload={handleDownload} />
-            ) : (
-              <ShimmerCard />
-            )}
-            {icons.length > 3 ? (
-              <IconCard icon={icons[3]} onDownload={handleDownload} />
             ) : (
               <ShimmerCard />
             )}

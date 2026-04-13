@@ -348,7 +348,7 @@ async function generateIcon(
   prompt: string,
   apiKey: string,
   maxRetries: number = 5
-): Promise<string[]> {
+): Promise<string> {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const response = await fetch(DASHSCOPE_SUBMIT_URL, {
       method: "POST",
@@ -368,7 +368,7 @@ async function generateIcon(
         },
         parameters: {
           size: "1024*1024",
-          n: 2,
+          n: 1,
           seed: Math.floor(Math.random() * 2147483647),
           prompt_extend: false,
           watermark: false,
@@ -407,17 +407,12 @@ async function generateIcon(
       throw new Error(`Dashscope API error: ${data.code} - ${data.message}`);
     }
 
-    const choices = data.output?.choices || [];
-    const imageUrls: string[] = [];
-    for (const choice of choices) {
-      const image = choice?.message?.content?.[0]?.image;
-      if (image) imageUrls.push(image);
-    }
-    if (imageUrls.length === 0) {
+    const image = data.output?.choices?.[0]?.message?.content?.[0]?.image;
+    if (!image) {
       throw new Error(`Dashscope returned no image: ${JSON.stringify(data)}`);
     }
 
-    return imageUrls;
+    return image;
   }
 
   throw new Error("[throttled] Dashscope image generation failed after retries");
@@ -443,7 +438,7 @@ async function removeBackground(imageUrl: string, apiKey: string): Promise<strin
                 { type: "image_url", image_url: { url: imageUrl } },
                 {
                   type: "text",
-                  text: "Remove the white background completely. Make the background fully transparent. Keep only the rounded square (squircle) icon shape with all its details intact.",
+                  text: "Cut out the rounded square icon from the white background. The area outside the icon should be completely transparent (alpha=0). Do not replace the background with any pattern.",
                 },
               ],
             },
@@ -593,7 +588,7 @@ export class GenerationQueue {
           } else if (task.status === "generating") {
             await writer.write(
               encoder.encode(
-                `event: generating\ndata: ${JSON.stringify({ index: task.currentIconIndex ?? 0, total: 4 })}\n\n`
+                `event: generating\ndata: ${JSON.stringify({ index: task.currentIconIndex ?? 0, total: 2 })}\n\n`
               )
             );
             // Send any already-completed icons
@@ -707,7 +702,7 @@ export class GenerationQueue {
         // Mark as generating
         task.status = "generating";
         task.currentIconIndex = 0;
-        this.sendToTask(task.taskId, "generating", { index: 0, total: 4 });
+        this.sendToTask(task.taskId, "generating", { index: 0, total: 2 });
 
         // Step 1: Synthesize prompts
         const [promptA, promptB] = await synthesizePrompts(
@@ -716,31 +711,32 @@ export class GenerationQueue {
           task.promptModel
         );
 
-        // Step 2: Generate icons (n=2 each, 4 total)
+        // Step 2: Generate icons (1 per prompt, 2 total)
         await this.waitForCooldown();
-        const genIcons = async (prompt: string, startIndex: number) => {
-          const urls = await generateIcon(prompt, this.env.DASHSCOPE_API_KEY);
-          const results: string[] = [];
-          for (let i = 0; i < urls.length; i++) {
-            const index = startIndex + i;
-            let finalUrl = urls[i];
-            // Remove background
-            try {
-              finalUrl = await removeBackground(urls[i], this.env.DASHSCOPE_API_KEY);
-            } catch (e) {
-              console.warn(`removeBackground failed for index ${index}, using original:`, e);
-            }
-            task.icons.push({ url: finalUrl, index });
-            this.sendToTask(task.taskId, "icon_ready", { url: finalUrl, index });
-            results.push(finalUrl);
-          }
-          return results;
-        };
-        await Promise.all([
-          genIcons(promptA, 0),
-          genIcons(promptB, 2),
-        ]);
+
+        const urlA = await generateIcon(promptA, this.env.DASHSCOPE_API_KEY);
+        let finalA = urlA;
+        try {
+          finalA = await removeBackground(urlA, this.env.DASHSCOPE_API_KEY);
+        } catch (e) {
+          console.warn(`removeBackground failed for index 0, using original:`, e);
+        }
+        task.icons.push({ url: finalA, index: 0 });
+        this.sendToTask(task.taskId, "icon_ready", { url: finalA, index: 0 });
+
+        // cooldown
         this.lastDashscopeFinishedAt = Date.now();
+        await this.waitForCooldown();
+
+        const urlB = await generateIcon(promptB, this.env.DASHSCOPE_API_KEY);
+        let finalB = urlB;
+        try {
+          finalB = await removeBackground(urlB, this.env.DASHSCOPE_API_KEY);
+        } catch (e) {
+          console.warn(`removeBackground failed for index 1, using original:`, e);
+        }
+        task.icons.push({ url: finalB, index: 1 });
+        this.sendToTask(task.taskId, "icon_ready", { url: finalB, index: 1 });
 
         // Step 4: Increment rate limit (deferred billing)
         const remaining = task.isTestMode
