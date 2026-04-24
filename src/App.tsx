@@ -42,29 +42,31 @@ function getTurnstileToken(): Promise<string> {
       reject(new Error('turnstile not loaded'))
       return
     }
+    // Invisible widget needs a rendered (non-display:none) container.
     const host = document.createElement('div')
-    host.style.display = 'none'
+    host.setAttribute('aria-hidden', 'true')
+    host.style.cssText =
+      'position:fixed;bottom:0;right:0;width:0;height:0;overflow:hidden;pointer-events:none;opacity:0;'
     document.body.appendChild(host)
+    let settled = false
+    const done = (fn: () => void) => {
+      if (settled) return
+      settled = true
+      try { document.body.removeChild(host) } catch {}
+      fn()
+    }
+    const timer = setTimeout(() => done(() => reject(new Error('turnstile timeout (10s)'))), 10_000)
     try {
       ts.render(host, {
         sitekey: TURNSTILE_SITE_KEY,
         size: 'invisible',
-        callback: (token: string) => {
-          document.body.removeChild(host)
-          resolve(token)
-        },
-        'error-callback': () => {
-          document.body.removeChild(host)
-          reject(new Error('turnstile error'))
-        },
-        'timeout-callback': () => {
-          document.body.removeChild(host)
-          reject(new Error('turnstile timeout'))
-        },
+        callback: (token: string) => { clearTimeout(timer); done(() => resolve(token)) },
+        'error-callback': () => { clearTimeout(timer); done(() => reject(new Error('turnstile error'))) },
+        'timeout-callback': () => { clearTimeout(timer); done(() => reject(new Error('turnstile timeout'))) },
       })
     } catch (e) {
-      document.body.removeChild(host)
-      reject(e as Error)
+      clearTimeout(timer)
+      done(() => reject(e as Error))
     }
   })
 }
