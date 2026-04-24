@@ -83,6 +83,18 @@ const CORS_HEADERS: Record<string, string> = {
 const MAX_QUEUE_SIZE = 10;
 const TASK_TIMEOUT_MS = 120_000;
 
+// Origin allowlist — only these front-ends may call the mutating endpoints.
+const ALLOWED_ORIGINS = new Set<string>([
+  "https://icon.weweekly.online",
+  "http://localhost:5173",
+  "http://localhost:4173",
+  "http://127.0.0.1:5173",
+]);
+
+// Short-burst rate limit (IP-scoped, in addition to the daily quota).
+const BURST_WINDOW_SECONDS = 60;
+const BURST_LIMIT = 3;
+
 const STYLE_MAP: Record<StyleWord, string> = {
   toylike: 'Charming toylike quality, crisp clean edges. Vivid saturated colors. Simplified and cheerful.',
   refined: 'Clean refined quality, crisp precise edges. Warm muted tones. Simplified and professional.',
@@ -215,6 +227,26 @@ function getTodayKey(ip: string): string {
 }
 
 // --- Rate limiting (check only, no increment) ---
+
+async function checkBurst(
+  kv: KVNamespace,
+  ip: string
+): Promise<{ allowed: boolean; retryAfter?: number }> {
+  const key = `burst:${ip}:${Math.floor(Date.now() / (BURST_WINDOW_SECONDS * 1000))}`;
+  const raw = await kv.get(key);
+  const count = raw ? parseInt(raw, 10) : 0;
+  if (count >= BURST_LIMIT) {
+    return { allowed: false, retryAfter: BURST_WINDOW_SECONDS };
+  }
+  await kv.put(key, String(count + 1), { expirationTtl: BURST_WINDOW_SECONDS * 2 });
+  return { allowed: true };
+}
+
+function isAllowedOrigin(request: Request): boolean {
+  const origin = request.headers.get("Origin") || "";
+  if (!origin) return true;
+  return ALLOWED_ORIGINS.has(origin);
+}
 
 async function checkRateLimit(
   kv: KVNamespace,
@@ -893,6 +925,20 @@ async function handleGenerate(
   const isTestMode = url.searchParams.has("test");
   const promptModel = PROMPT_MODEL;
 
+  // Burst limit (short window) before daily quota.
+  if (!isTestMode) {
+    const burst = await checkBurst(env.RATE_LIMIT, ip);
+    if (!burst.allowed) {
+      return jsonResponse(
+        {
+          error: "rate_limited_burst",
+          message: `请求太快，请 ${burst.retryAfter}s 后再试`,
+        },
+        429
+      );
+    }
+  }
+
   // Check rate limit before queuing
   if (!isTestMode) {
     const { allowed } = await checkRateLimit(env.RATE_LIMIT, ip);
@@ -1003,6 +1049,12 @@ export default {
     }
 
     if (path === "/api/generate" && request.method === "POST") {
+      if (!isAllowedOrigin(request)) {
+        return new Response(
+          JSON.stringify({ error: "forbidden", message: "origin not allowed" }),
+          { status: 403, headers: { "Content-Type": "application/json", ...CORS_HEADERS } }
+        );
+      }
       return handleGenerate(request, env);
     }
 
