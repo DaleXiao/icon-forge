@@ -31,6 +31,44 @@ const API_BASE = import.meta.env.PROD ? 'https://api-icon.weweekly.online/api' :
 const _params = new URLSearchParams(window.location.search)
 const TEST_PARAM = _params.has('test') ? '?test' : ''
 
+// Cloudflare Turnstile site key (public, safe to ship in bundle).
+const TURNSTILE_SITE_KEY = '0x4AAAAAADCaJjLh7I5xepTX'
+
+function getTurnstileToken(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    // @ts-expect-error — turnstile is loaded via index.html <script>
+    const ts = window.turnstile
+    if (!ts) {
+      reject(new Error('turnstile not loaded'))
+      return
+    }
+    const host = document.createElement('div')
+    host.style.display = 'none'
+    document.body.appendChild(host)
+    try {
+      ts.render(host, {
+        sitekey: TURNSTILE_SITE_KEY,
+        size: 'invisible',
+        callback: (token: string) => {
+          document.body.removeChild(host)
+          resolve(token)
+        },
+        'error-callback': () => {
+          document.body.removeChild(host)
+          reject(new Error('turnstile error'))
+        },
+        'timeout-callback': () => {
+          document.body.removeChild(host)
+          reject(new Error('turnstile timeout'))
+        },
+      })
+    } catch (e) {
+      document.body.removeChild(host)
+      reject(e as Error)
+    }
+  })
+}
+
 // --- Theme helpers ---
 
 type Theme = 'light' | 'dark'
@@ -326,10 +364,17 @@ export default function App() {
     cleanup()
 
     try {
+      let turnstileToken = ''
+      try {
+        turnstileToken = await getTurnstileToken()
+      } catch (e) {
+        console.warn('turnstile unavailable, calling without token:', e)
+      }
+
       const res = await fetch(`${API_BASE}/generate${TEST_PARAM}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ description: trimmed }),
+        body: JSON.stringify({ description: trimmed, turnstileToken }),
       })
 
       if (res.status === 429) {

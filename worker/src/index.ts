@@ -3,6 +3,7 @@ export interface Env {
   DASHSCOPE_API_KEY: string;
   ENVIRONMENT: string;
   GENERATION_QUEUE: DurableObjectNamespace;
+  TURNSTILE_SECRET?: string;
 }
 
 // --- Types ---
@@ -246,6 +247,26 @@ function isAllowedOrigin(request: Request): boolean {
   const origin = request.headers.get("Origin") || "";
   if (!origin) return true;
   return ALLOWED_ORIGINS.has(origin);
+}
+
+async function verifyTurnstile(token: string, env: Env, ip: string): Promise<boolean> {
+  if (!env.TURNSTILE_SECRET) return true;
+  if (!token) return false;
+  try {
+    const res = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        secret: env.TURNSTILE_SECRET,
+        response: token,
+        remoteip: ip,
+      }),
+    });
+    const data = (await res.json()) as { success?: boolean };
+    return !!data.success;
+  } catch {
+    return false;
+  }
 }
 
 async function checkRateLimit(
@@ -902,9 +923,9 @@ async function handleGenerate(
   request: Request,
   env: Env
 ): Promise<Response> {
-  let body: { description?: string };
+  let body: { description?: string; turnstileToken?: string };
   try {
-    body = (await request.json()) as { description?: string };
+    body = (await request.json()) as { description?: string; turnstileToken?: string };
   } catch {
     return jsonResponse(
       { error: "invalid_input", message: "请提供有效的 JSON 请求体" },
@@ -927,6 +948,13 @@ async function handleGenerate(
 
   // Burst limit (short window) before daily quota.
   if (!isTestMode) {
+    const ok = await verifyTurnstile(body.turnstileToken || "", env, ip);
+    if (!ok) {
+      return jsonResponse(
+        { error: "turnstile_failed", message: "人机验证未通过，请刷新重试" },
+        403
+      );
+    }
     const burst = await checkBurst(env.RATE_LIMIT, ip);
     if (!burst.allowed) {
       return jsonResponse(
