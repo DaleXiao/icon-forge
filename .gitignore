@@ -9,3 +9,8 @@ node_modules/
 node_modules/\ndist/\n.wrangler/
 .wrangler/
 skills/
+SPEC.md
+PRD.md
+TASK.md
+DESIGN.md
+ICON-FORGE-DESIGN.md
