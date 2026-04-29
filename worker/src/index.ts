@@ -67,13 +67,11 @@ interface SSEWriter {
 // --- Constants ---
 
 const DAILY_LIMIT = 3;
-const PROMPT_MODEL = "qwen3.6-plus";
+const PROMPT_MODEL = "qwen3.6-max-preview";
 const DASHSCOPE_MODEL = "wan2.7-image-pro";
 const DASHSCOPE_SUBMIT_URL =
   "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
 const PROMPT_API_URL =
-  "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
-const COMPAT_API_URL =
   "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -198,6 +196,34 @@ Output ONLY valid JSON (no markdown fences, no commentary):
     "styleWord": "..."
   }
 }`;
+
+// T-121: critique pass — second LLM call detects 4 drift classes and proposes a fix.
+// Only adds counterexample reasoning; does NOT touch positive examples in SYSTEM_PROMPT.
+const SYSTEM_PROMPT_CRITIQUE = `You are a senior icon-design reviewer. You receive (1) the original user description, (2) two prompt variants produced by a junior designer. Your only job is to detect whether either variant has drifted from the user's intent in one of FOUR specific ways. Be strict but surgical — do not rewrite for style, only fix drift.
+
+━━━ DRIFT CLASSES ━━━
+D1. SUBJECT_REPLACEMENT — The variant's subject is not what the user asked for (e.g. user wants a todo-list app, variant becomes a generic notebook).
+D2. KEYWORD_OMISSION — A concrete noun/action explicitly named by the user is missing from the variant (e.g. user says "checklist" but variant has no list/checkmarks).
+D3. STYLE_INVERSION — The variant's mood/style is the opposite of what the user asked for (e.g. user says "playful kids app", variant is dark and minimal).
+D4. TOPIC_DRIFT — The variant pivots to a tangentially related but wrong domain (e.g. user wants a photographer's portfolio app, variant becomes a generic art gallery).
+
+If NONE of the above apply, verdict = "ok". Do not fix for taste, polish, or composition.
+
+━━━ OUTPUT (JSON only, no prose, no code fence) ━━━
+{
+  "verdict": "ok" | "fix",
+  "drift": {
+    "variant_a": "none" | "D1" | "D2" | "D3" | "D4",
+    "variant_b": "none" | "D1" | "D2" | "D3" | "D4"
+  },
+  "reason": "one short sentence per drifted variant, or empty",
+  "fixed": {
+    "variant_a": { "subject": "...", "visualDetails": "...", "contrastColors": "...", "moodWord": "...", "styleWord": "toylike|refined|modern|minimal|playful" },
+    "variant_b": { "subject": "...", "visualDetails": "...", "contrastColors": "...", "moodWord": "...", "styleWord": "toylike|refined|modern|minimal|playful" }
+  }
+}
+
+If verdict = "ok", omit the "fixed" field entirely. If verdict = "fix", "fixed" MUST contain BOTH variants (re-emit unchanged variants verbatim, edit only the drifted one). Keep all other design rules from the original brief — only correct the named drift.`;
 
 // --- Helper functions ---
 
@@ -392,7 +418,102 @@ async function synthesizePrompts(
     }
   }
 
+  // T-121: critique pass — detect 4 drift classes and apply fixes if any.
+  // Best-effort: any error here falls back to the original variants.
+  try {
+    parsed = await critiqueAndMaybeFix(description, parsed, apiKey, model);
+  } catch (e) {
+    console.warn('critique pass failed, using original variants:', e);
+  }
+
   return [assemblePrompt(parsed.variant_a), assemblePrompt(parsed.variant_b)];
+}
+
+// T-121: critique pass implementation. Calls the same prompt model with a strict
+// drift-detection system prompt. If verdict=fix and fixed variants validate, return
+// the fixed pair; otherwise return the original parsed response unchanged.
+async function critiqueAndMaybeFix(
+  description: string,
+  parsed: PromptResponse,
+  apiKey: string,
+  model: string
+): Promise<PromptResponse> {
+  const userPayload = JSON.stringify({
+    user_description: description,
+    variant_a: parsed.variant_a,
+    variant_b: parsed.variant_b,
+  });
+
+  const requestBody: PromptChatRequest = {
+    model,
+    temperature: 0.2,
+    enable_thinking: true,
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT_CRITIQUE },
+      { role: 'user', content: userPayload },
+    ],
+  };
+
+  let response: Response | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    response = await fetch(PROMPT_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+    });
+    if (response.status === 429 && attempt < 2) {
+      const delay = Math.min(5000 * Math.pow(2, attempt), 20000);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      continue;
+    }
+    break;
+  }
+
+  if (!response || !response.ok) {
+    throw new Error(`Critique API error (${response?.status})`);
+  }
+
+  const data = (await response.json()) as PromptChatResponse;
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error('Critique API empty content');
+
+  let cleaned = content.trim();
+  if (cleaned.startsWith('```')) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+  }
+  const critique = JSON.parse(cleaned) as {
+    verdict?: string;
+    fixed?: PromptResponse;
+  };
+
+  if (critique.verdict !== 'fix' || !critique.fixed) {
+    return parsed;
+  }
+
+  // Validate fixed structure; if invalid, fall back to original.
+  const validStyleWords: StyleWord[] = ['toylike', 'refined', 'modern', 'minimal', 'playful'];
+  for (const key of ['variant_a', 'variant_b'] as const) {
+    const v = critique.fixed[key];
+    if (
+      !v?.subject ||
+      !v?.visualDetails ||
+      !v?.contrastColors ||
+      !v?.moodWord ||
+      !v?.styleWord
+    ) {
+      console.warn(`critique fixed.${key} missing fields, falling back to original`);
+      return parsed;
+    }
+    if (!validStyleWords.includes(v.styleWord)) {
+      v.styleWord = 'toylike';
+    }
+  }
+
+  console.log('critique applied fix');
+  return critique.fixed;
 }
 
 // --- Image generation ---
@@ -474,9 +595,12 @@ async function generateIcon(
 // --- Background removal ---
 
 async function removeBackground(imageUrl: string, apiKey: string): Promise<string> {
+  // T-121: switch from compatible-mode chat endpoint to native multimodal-generation
+  // endpoint. wan2.7-image-pro image-edit ability is NOT exposed via the OpenAI-compat
+  // layer, so the compat-mode call returned 0/10 success in prod. Native endpoint = 8/10.
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const response = await fetch(COMPAT_API_URL, {
+      const response = await fetch(DASHSCOPE_SUBMIT_URL, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -484,18 +608,19 @@ async function removeBackground(imageUrl: string, apiKey: string): Promise<strin
         },
         body: JSON.stringify({
           model: "wan2.7-image-pro",
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "image_url", image_url: { url: imageUrl } },
-                {
-                  type: "text",
-                  text: "Cut out the rounded square icon from the white background. The area outside the icon should be completely transparent (alpha=0). Do not replace the background with any pattern.",
-                },
-              ],
-            },
-          ],
+          input: {
+            messages: [
+              {
+                role: "user",
+                content: [
+                  { image: imageUrl },
+                  {
+                    text: "Cut out the rounded square icon from the white background. The area outside the icon should be completely transparent (alpha=0). Do not replace the background with any pattern.",
+                  },
+                ],
+              },
+            ],
+          },
         }),
       });
 
@@ -504,18 +629,26 @@ async function removeBackground(imageUrl: string, apiKey: string): Promise<strin
       }
 
       const data = (await response.json()) as {
-        choices?: Array<{
-          message?: {
-            content?: Array<{ type?: string; image?: string }>;
-          };
-        }>;
+        output?: {
+          choices?: Array<{
+            message?: {
+              content?: Array<{ image?: string }>;
+            };
+          }>;
+        };
+        code?: string;
+        message?: string;
       };
 
-      const content = data.choices?.[0]?.message?.content;
-      if (!content) throw new Error("No content in removeBackground response");
-      const imageItem = content.find((item) => item.type === "image");
-      if (!imageItem?.image) throw new Error("No image in removeBackground response");
-      return imageItem.image;
+      if (data.code) {
+        throw new Error(`removeBackground API error: ${data.code} - ${data.message}`);
+      }
+
+      const image = data.output?.choices?.[0]?.message?.content?.[0]?.image;
+      if (!image) {
+        throw new Error(`removeBackground returned no image: ${JSON.stringify(data)}`);
+      }
+      return image;
     } catch (e) {
       if (attempt >= 2) throw e;
       await new Promise((resolve) => setTimeout(resolve, 2000));
