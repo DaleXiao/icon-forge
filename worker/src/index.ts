@@ -67,14 +67,16 @@ interface SSEWriter {
 // --- Constants ---
 
 const DAILY_LIMIT = 3;
-const PROMPT_MODEL = "qwen3.6-plus";
+const PROMPT_MODEL = "qwen3.6-max-preview";  // T-121: 提升主 prompt 模型 + thinking 补漏
+const CRITIQUE_MODEL = "qwen3.6-max-preview"; // T-121: critique 复用同一 model
 const DASHSCOPE_MODEL = "wan2.7-image-pro";
 const DASHSCOPE_SUBMIT_URL =
   "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
 const PROMPT_API_URL =
   "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
-const COMPAT_API_URL =
-  "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
+// COMPAT_API_URL removed in T-121: removeBg now uses DASHSCOPE_SUBMIT_URL
+// (native multimodal-generation) which actually exposes wan2.7-image-pro's
+// image-edit capability. The OpenAI-compatible chat layer did not.
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
@@ -198,6 +200,34 @@ Output ONLY valid JSON (no markdown fences, no commentary):
     "styleWord": "..."
   }
 }`;
+
+// T-121: critique 反思阶段。仅检测反例（drift），verdict=ok 时原封不动返回；
+// verdict=fix 时输出 fixed.{variant_a,variant_b}。不动主 SYSTEM_PROMPT 的正例。
+const SYSTEM_PROMPT_CRITIQUE = `You are reviewing TWO app-icon concept variants produced for a user description. Your single job: detect concept drift in EITHER variant against the user's description.
+
+━━━ DRIFT TYPES (only flag these) ━━━
+D1 SUBJECT_REPLACEMENT — the variant.subject is a different object than what the description names. (e.g. user said "todo list app" but subject is "calendar")
+D2 KEYWORD_OMISSION — a load-bearing noun in the description has no representation in subject/visualDetails. (e.g. "photographer portfolio" → subject is "gallery wall" with no camera/lens hint at all)
+D3 STYLE_OPPOSITE — description implies a mood/style and styleWord is its semantic opposite. (e.g. description "corporate banking" → styleWord "playful")
+D4 OFF_TOPIC — the variant as a whole feels unrelated to the description.
+
+━━━ NON-DRIFT (do NOT flag) ━━━
+- Different valid metaphors for the same subject (this is intentional diversity).
+- Imperfect color/material specificity (main prompt handles that).
+- Missing details that are stylistic choices, not load-bearing keywords.
+
+━━━ OUTPUT ━━━
+Return ONLY a JSON object, no prose. Two shapes only:
+
+{"verdict":"ok"}
+
+or
+
+{"verdict":"fix","drift":[{"variant":"a"|"b","type":"D1"|"D2"|"D3"|"D4","why":"<one short sentence>"}],"fixed":{"variant_a":{...},"variant_b":{...}}}
+
+The "fixed" variants MUST keep the same JSON schema as the input variants (subject/visualDetails/contrastColors/moodWord/styleWord) and follow the same design rules. Replace ONLY the drifting variant; the non-drifting one in "fixed" can be a verbatim copy. Both variants must be present in "fixed" so the consumer can use it as a drop-in replacement.
+
+Be conservative. If you are unsure, prefer {"verdict":"ok"}.`;
 
 // --- Helper functions ---
 
@@ -392,7 +422,86 @@ async function synthesizePrompts(
     }
   }
 
-  return [assemblePrompt(parsed.variant_a), assemblePrompt(parsed.variant_b)];
+  // T-121: critique 阶段。仅检测 drift 并修复反例，不动正例。
+  // 失败静默回退 (parsed 保持不变)，不拖住主流程。
+  const reviewed = await critiqueAndFix(description, parsed, apiKey).catch(
+    () => parsed,
+  );
+
+  return [assemblePrompt(reviewed.variant_a), assemblePrompt(reviewed.variant_b)];
+}
+
+// T-121: 只反例的 critique。返回原 parsed (verdict=ok) 或 fixed (verdict=fix)。
+// 失败/超时/解析错误都抛错，caller .catch 静默回退。
+async function critiqueAndFix(
+  description: string,
+  parsed: PromptResponse,
+  apiKey: string,
+): Promise<PromptResponse> {
+  const requestBody: PromptChatRequest = {
+    model: CRITIQUE_MODEL,
+    temperature: 0.2,
+    enable_thinking: true,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT_CRITIQUE },
+      {
+        role: "user",
+        content: `User description:\n${description}\n\nVariants:\n${JSON.stringify(parsed)}`,
+      },
+    ],
+  };
+
+  const response = await fetch(PROMPT_API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(requestBody),
+  });
+  if (!response.ok) {
+    throw new Error(`critique API error (${response.status})`);
+  }
+  const data = (await response.json()) as PromptChatResponse;
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error("critique empty content");
+
+  let cleaned = content.trim();
+  if (cleaned.startsWith("```")) {
+    cleaned = cleaned
+      .replace(/^```(?:json)?\s*\n?/, "")
+      .replace(/\n?```\s*$/, "");
+  }
+  // 容忍模型多吐一句序言：提取第一个 {…}
+  const m = cleaned.match(/\{[\s\S]*\}/);
+  if (!m) throw new Error("critique returned no JSON object");
+  const verdict = JSON.parse(m[0]) as {
+    verdict: "ok" | "fix";
+    fixed?: PromptResponse;
+  };
+
+  if (verdict.verdict !== "fix" || !verdict.fixed) return parsed;
+
+  // 验证 fixed 结构完整 + style 合法，否则退原版。
+  const validStyleWords: StyleWord[] = [
+    'toylike', 'refined', 'modern', 'minimal', 'playful',
+  ];
+  for (const key of ["variant_a", "variant_b"] as const) {
+    const v = verdict.fixed[key];
+    if (
+      !v?.subject ||
+      !v?.visualDetails ||
+      !v?.contrastColors ||
+      !v?.moodWord ||
+      !v?.styleWord
+    ) {
+      return parsed;
+    }
+    if (!validStyleWords.includes(v.styleWord)) {
+      v.styleWord = 'toylike';
+    }
+  }
+  return verdict.fixed;
 }
 
 // --- Image generation ---
@@ -474,9 +583,13 @@ async function generateIcon(
 // --- Background removal ---
 
 async function removeBackground(imageUrl: string, apiKey: string): Promise<string> {
+  // T-121 / issue #10: native multimodal-generation endpoint.
+  // 原本调 /compatible-mode/v1/chat/completions (OpenAI 兼容层)——wan2.7-image-pro
+  // image-edit 能力在该层未暴露，造成 0/6 成功（离线测 10/16）。改调
+  // native endpoint后，离线测 8/10 成功。 body schema 跟随 generateIcon 一致。
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const response = await fetch(COMPAT_API_URL, {
+      const response = await fetch(DASHSCOPE_SUBMIT_URL, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -484,18 +597,19 @@ async function removeBackground(imageUrl: string, apiKey: string): Promise<strin
         },
         body: JSON.stringify({
           model: "wan2.7-image-pro",
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "image_url", image_url: { url: imageUrl } },
-                {
-                  type: "text",
-                  text: "Cut out the rounded square icon from the white background. The area outside the icon should be completely transparent (alpha=0). Do not replace the background with any pattern.",
-                },
-              ],
-            },
-          ],
+          input: {
+            messages: [
+              {
+                role: "user",
+                content: [
+                  { image: imageUrl },
+                  {
+                    text: "Cut out the rounded square icon from the white background. The area outside the icon should be completely transparent (alpha=0). Do not replace the background with any pattern.",
+                  },
+                ],
+              },
+            ],
+          },
         }),
       });
 
@@ -503,17 +617,25 @@ async function removeBackground(imageUrl: string, apiKey: string): Promise<strin
         throw new Error(`removeBackground HTTP ${response.status}`);
       }
 
+      // native endpoint: {output:{choices:[{message:{content:[{image:url}]}}]}}
       const data = (await response.json()) as {
-        choices?: Array<{
-          message?: {
-            content?: Array<{ type?: string; image?: string }>;
-          };
-        }>;
+        output?: {
+          choices?: Array<{
+            message?: {
+              content?: Array<{ image?: string; text?: string }>;
+            };
+          }>;
+        };
+        code?: string;
+        message?: string;
       };
 
-      const content = data.choices?.[0]?.message?.content;
+      if (data.code) {
+        throw new Error(`removeBackground API error: ${data.code} - ${data.message}`);
+      }
+      const content = data.output?.choices?.[0]?.message?.content;
       if (!content) throw new Error("No content in removeBackground response");
-      const imageItem = content.find((item) => item.type === "image");
+      const imageItem = content.find((item) => item.image);
       if (!imageItem?.image) throw new Error("No image in removeBackground response");
       return imageItem.image;
     } catch (e) {
