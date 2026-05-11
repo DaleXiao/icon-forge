@@ -1,6 +1,9 @@
 export interface Env {
   RATE_LIMIT: KVNamespace;
-  DASHSCOPE_API_KEY: string;
+  // SPEC-160: 改走 api-llm.weweekly.online gateway。
+  // 旧 DASHSCOPE_API_KEY secret 由 cindy 在 deploy 阶段移除（保留 30 天 rollback 窗）。
+  LLM_SERVICE_TOKEN: string;
+  LLM_GATEWAY_URL: string;
   ENVIRONMENT: string;
   GENERATION_QUEUE: DurableObjectNamespace;
   TURNSTILE_SECRET?: string;
@@ -70,13 +73,12 @@ const DAILY_LIMIT = 3;
 const PROMPT_MODEL = "qwen3.6-max-preview";  // T-121: 提升主 prompt 模型 + thinking 补漏
 const CRITIQUE_MODEL = "qwen3.6-max-preview"; // T-121: critique 复用同一 model
 const DASHSCOPE_MODEL = "wan2.7-image-pro";
-const DASHSCOPE_SUBMIT_URL =
-  "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
-const PROMPT_API_URL =
-  "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
-// COMPAT_API_URL removed in T-121: removeBg now uses DASHSCOPE_SUBMIT_URL
-// (native multimodal-generation) which actually exposes wan2.7-image-pro's
-// image-edit capability. The OpenAI-compatible chat layer did not.
+// SPEC-160: endpoints 全部走 api-llm.weweekly.online gateway。
+// Gateway 内部透传到 dashscope，上游响应 schema 不变；icon-forge 解析逻辑 0 修改。
+// chat completions          → /v1/chat/completions    （OpenAI 兼容 shape）
+// multimodal generation     → /v1/images/generations   （native generation 端点）
+const CHAT_PATH = "/v1/chat/completions";
+const IMAGE_PATH = "/v1/images/generations";
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
@@ -346,6 +348,7 @@ function assemblePrompt(v: PromptVariant): string {
 async function synthesizePrompts(
   description: string,
   apiKey: string,
+  gatewayUrl: string,
   model: string = PROMPT_MODEL
 ): Promise<[string, string]> {
   const requestBody: PromptChatRequest = {
@@ -361,7 +364,7 @@ async function synthesizePrompts(
   // Retry loop for prompt API (handles 429 rate limit)
   let response: Response | null = null;
   for (let attempt = 0; attempt < 3; attempt++) {
-    response = await fetch(PROMPT_API_URL, {
+    response = await fetch(`${gatewayUrl}${CHAT_PATH}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -424,7 +427,7 @@ async function synthesizePrompts(
 
   // T-121: critique 阶段。仅检测 drift 并修复反例，不动正例。
   // 失败静默回退 (parsed 保持不变)，不拖住主流程。
-  const reviewed = await critiqueAndFix(description, parsed, apiKey).catch(
+  const reviewed = await critiqueAndFix(description, parsed, apiKey, gatewayUrl).catch(
     () => parsed,
   );
 
@@ -437,6 +440,7 @@ async function critiqueAndFix(
   description: string,
   parsed: PromptResponse,
   apiKey: string,
+  gatewayUrl: string,
 ): Promise<PromptResponse> {
   const requestBody: PromptChatRequest = {
     model: CRITIQUE_MODEL,
@@ -451,7 +455,7 @@ async function critiqueAndFix(
     ],
   };
 
-  const response = await fetch(PROMPT_API_URL, {
+  const response = await fetch(`${gatewayUrl}${CHAT_PATH}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -460,6 +464,12 @@ async function critiqueAndFix(
     body: JSON.stringify(requestBody),
   });
   if (!response.ok) {
+    // SPEC-160: 401 → 配置问题，不重试
+    if (response.status === 401) {
+      const errBody = await response.text();
+      console.error(`[llm-gateway] unauthorized on critique: ${errBody}`);
+      throw new Error(`LLM gateway unauthorized: ${errBody}`);
+    }
     throw new Error(`critique API error (${response.status})`);
   }
   const data = (await response.json()) as PromptChatResponse;
@@ -509,10 +519,11 @@ async function critiqueAndFix(
 async function generateIcon(
   prompt: string,
   apiKey: string,
+  gatewayUrl: string,
   maxRetries: number = 5
 ): Promise<string> {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const response = await fetch(DASHSCOPE_SUBMIT_URL, {
+    const response = await fetch(`${gatewayUrl}${IMAGE_PATH}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -540,12 +551,18 @@ async function generateIcon(
 
     if (!response.ok) {
       const errorText = await response.text();
-      if (response.status === 429 && attempt < maxRetries - 1) {
+      // SPEC-160: 401 → 配置问题，不重试
+      if (response.status === 401) {
+        console.error(`[llm-gateway] unauthorized on image: ${errorText}`);
+        throw new Error(`LLM gateway unauthorized: ${errorText}`);
+      }
+      // 429 / 502 / 503 → 重试
+      if ((response.status === 429 || response.status === 502 || response.status === 503) && attempt < maxRetries - 1) {
         const delay = Math.min(5000 * Math.pow(2, attempt), 30000);
         await new Promise((resolve) => setTimeout(resolve, delay));
         continue;
       }
-      throw new Error(`Dashscope error (${response.status}): ${errorText}`);
+      throw new Error(`LLM gateway image error (${response.status}): ${errorText}`);
     }
 
     const data = (await response.json()) as {
@@ -582,14 +599,14 @@ async function generateIcon(
 
 // --- Background removal ---
 
-async function removeBackground(imageUrl: string, apiKey: string): Promise<string> {
+async function removeBackground(imageUrl: string, apiKey: string, gatewayUrl: string): Promise<string> {
   // T-121 / issue #10: native multimodal-generation endpoint.
   // 原本调 /compatible-mode/v1/chat/completions (OpenAI 兼容层)——wan2.7-image-pro
   // image-edit 能力在该层未暴露，造成 0/6 成功（离线测 10/16）。改调
   // native endpoint后，离线测 8/10 成功。 body schema 跟随 generateIcon 一致。
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const response = await fetch(DASHSCOPE_SUBMIT_URL, {
+      const response = await fetch(`${gatewayUrl}${IMAGE_PATH}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -614,6 +631,12 @@ async function removeBackground(imageUrl: string, apiKey: string): Promise<strin
       });
 
       if (!response.ok) {
+        // SPEC-160: 401 → 配置问题，不重试；其他交给外层 catch 重试
+        if (response.status === 401) {
+          const errBody = await response.text();
+          console.error(`[llm-gateway] unauthorized on removeBackground: ${errBody}`);
+          throw new Error(`LLM gateway unauthorized: ${errBody}`);
+        }
         throw new Error(`removeBackground HTTP ${response.status}`);
       }
 
@@ -882,17 +905,18 @@ export class GenerationQueue {
         // Step 1: Synthesize prompts
         const [promptA, promptB] = await synthesizePrompts(
           task.description,
-          this.env.DASHSCOPE_API_KEY,
+          this.env.LLM_SERVICE_TOKEN,
+          this.env.LLM_GATEWAY_URL,
           task.promptModel
         );
 
         // Step 2: Generate icons (1 per prompt, 2 total)
         await this.waitForCooldown();
 
-        const urlA = await generateIcon(promptA, this.env.DASHSCOPE_API_KEY);
+        const urlA = await generateIcon(promptA, this.env.LLM_SERVICE_TOKEN, this.env.LLM_GATEWAY_URL);
         let finalA = urlA;
         try {
-          finalA = await removeBackground(urlA, this.env.DASHSCOPE_API_KEY);
+          finalA = await removeBackground(urlA, this.env.LLM_SERVICE_TOKEN, this.env.LLM_GATEWAY_URL);
         } catch (e) {
           console.warn(`removeBackground failed for index 0, using original:`, e);
         }
@@ -903,10 +927,10 @@ export class GenerationQueue {
         this.lastDashscopeFinishedAt = Date.now();
         await this.waitForCooldown();
 
-        const urlB = await generateIcon(promptB, this.env.DASHSCOPE_API_KEY);
+        const urlB = await generateIcon(promptB, this.env.LLM_SERVICE_TOKEN, this.env.LLM_GATEWAY_URL);
         let finalB = urlB;
         try {
-          finalB = await removeBackground(urlB, this.env.DASHSCOPE_API_KEY);
+          finalB = await removeBackground(urlB, this.env.LLM_SERVICE_TOKEN, this.env.LLM_GATEWAY_URL);
         } catch (e) {
           console.warn(`removeBackground failed for index 1, using original:`, e);
         }

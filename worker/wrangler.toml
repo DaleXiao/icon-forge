@@ -8,6 +8,8 @@ routes = [
 
 [vars]
 ENVIRONMENT = "production"
+# SPEC-160: LLM API Gateway。仅 URL，访问凭证走 LLM_SERVICE_TOKEN secret。
+LLM_GATEWAY_URL = "https://api-llm.weweekly.online"
 
 [[kv_namespaces]]
 binding = "RATE_LIMIT"
@@ -23,4 +25,6 @@ tag = "v1"
 new_sqlite_classes = ["GenerationQueue"]
 
 # Secrets (set via `wrangler secret put`):
+# - LLM_SERVICE_TOKEN   (SPEC-160; 值：SERVICE_TOKEN_ICON_FORGE / cindy deploy 时写入)
+# 旧 secret（保留 30 天 rollback 窗后删除）：
 # - DASHSCOPE_API_KEY
