@@ -406,23 +406,6 @@ export default function App() {
         return
       }
 
-      // SPEC-179 B-4: explicit 403 handler. Previously fell through to
-      // the generic !res.ok branch and surfaced the worker's turnstile
-      // error verbatim ("人机验证未通过…") — confusing in `?test`
-      // mode where the worker bypasses turnstile entirely (any 403 in
-      // that mode is therefore a real backend / origin problem, not a
-      // captcha problem).
-      if (res.status === 403) {
-        const data: ErrorResponse = await res.json().catch(() => ({} as ErrorResponse))
-        const msg = TEST_PARAM
-          ? '测试模式请求被拒，请检查控制台。'
-          : (data.message || '人机验证未通过，请刷新重试')
-        setError(msg)
-        setPhase('error')
-        setLoading(false)
-        return
-      }
-
       if (!res.ok) {
         const data: ErrorResponse = await res.json()
         setError(data.message || '生成失败，请重试')

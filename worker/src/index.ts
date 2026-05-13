@@ -86,17 +86,7 @@ const CORS_HEADERS: Record<string, string> = {
 };
 
 const MAX_QUEUE_SIZE = 10;
-// SPEC-179 B-3: bump from 120s → 180s. prompt 60s + 4 × image 10s = 100s
-// hit the old ceiling under any prompt slowdown. The per-LLM-fetch
-// AbortController (B-2) caps individual stalls, so the task envelope
-// only needs to cover successful end-to-end work.
-const TASK_TIMEOUT_MS = 180_000;
-// SPEC-179 B-1/B-2: per-LLM-fetch caps. enable_thinking can blow up
-// reasoning_tokens without max_tokens; without an AbortController the
-// underlying fetch sits idle until the task budget aborts the whole
-// request. Cap both.
-const LLM_CHAT_MAX_TOKENS = 2400;
-const LLM_CHAT_TIMEOUT_MS = 60_000;
+const TASK_TIMEOUT_MS = 120_000;
 
 // Origin allowlist — only these front-ends may call the mutating endpoints.
 const ALLOWED_ORIGINS = new Set<string>([
@@ -365,10 +355,6 @@ async function synthesizePrompts(
     model,
     temperature: 0.8,
     enable_thinking: true,
-    // SPEC-179 B-1: cap reasoning explosion. enable_thinking without
-    // max_tokens lets the model burn 1k+ reasoning_tokens, pushing the
-    // chat fetch past 90s. Same cap as ukiyo-e / gepa-server.
-    max_tokens: LLM_CHAT_MAX_TOKENS,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: description },
@@ -378,33 +364,14 @@ async function synthesizePrompts(
   // Retry loop for prompt API (handles 429 rate limit)
   let response: Response | null = null;
   for (let attempt = 0; attempt < 3; attempt++) {
-    // SPEC-179 B-2: per-attempt AbortController so a stuck fetch fails
-    // fast (60s) and either retries below or bubbles up to caller; the
-    // previous code only aborted at the task-envelope deadline.
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), LLM_CHAT_TIMEOUT_MS);
-    try {
-      response = await fetch(`${gatewayUrl}${CHAT_PATH}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(requestBody),
-        signal: ac.signal,
-      });
-    } catch (err) {
-      const isAbort = (err as Error | undefined)?.name === "AbortError";
-      if (isAbort && attempt < 2) {
-        clearTimeout(timer);
-        continue; // retry once on timeout
-      }
-      clearTimeout(timer);
-      throw isAbort
-        ? new Error(`Prompt API timeout after ${LLM_CHAT_TIMEOUT_MS}ms`)
-        : (err as Error);
-    }
-    clearTimeout(timer);
+    response = await fetch(`${gatewayUrl}${CHAT_PATH}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+    });
 
     if (response.status === 429 && attempt < 2) {
       const delay = Math.min(5000 * Math.pow(2, attempt), 20000);
@@ -479,9 +446,6 @@ async function critiqueAndFix(
     model: CRITIQUE_MODEL,
     temperature: 0.2,
     enable_thinking: true,
-    // SPEC-179 B-1: same reasoning cap as synthesizePrompts; critique
-    // returns small JSON, 2400 tokens is plenty.
-    max_tokens: LLM_CHAT_MAX_TOKENS,
     messages: [
       { role: "system", content: SYSTEM_PROMPT_CRITIQUE },
       {
@@ -491,30 +455,14 @@ async function critiqueAndFix(
     ],
   };
 
-  // SPEC-179 B-2: AbortController so a stuck critique fetch doesn't
-  // eat the parent task envelope. Caller .catch() falls back to the
-  // un-critiqued parsed prompts on any error, including timeout.
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), LLM_CHAT_TIMEOUT_MS);
-  let response: Response;
-  try {
-    response = await fetch(`${gatewayUrl}${CHAT_PATH}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(requestBody),
-      signal: ac.signal,
-    });
-  } catch (err) {
-    clearTimeout(timer);
-    if ((err as Error | undefined)?.name === "AbortError") {
-      throw new Error(`critique API timeout after ${LLM_CHAT_TIMEOUT_MS}ms`);
-    }
-    throw err;
-  }
-  clearTimeout(timer);
+  const response = await fetch(`${gatewayUrl}${CHAT_PATH}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(requestBody),
+  });
   if (!response.ok) {
     // SPEC-160: 401 → 配置问题，不重试
     if (response.status === 401) {
