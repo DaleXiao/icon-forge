@@ -30,6 +30,7 @@ const EXAMPLE_PROMPTS = ['记事本', '语音输入法', '旅行地图', '播客
 const API_BASE = import.meta.env.PROD ? 'https://api-icon.weweekly.online/api' : '/api'
 const _params = new URLSearchParams(window.location.search)
 const TEST_PARAM = _params.has('test') ? '?test' : ''
+const IS_TEST_MODE = _params.has('test')
 
 // Cloudflare Turnstile site key (public, safe to ship in bundle).
 const TURNSTILE_SITE_KEY = '0x4AAAAAADCaJjLh7I5xepTX'
@@ -230,6 +231,8 @@ export default function App() {
   function startSSE(taskId: string) {
     cleanup()
     currentTaskIdRef.current = taskId
+    // SPEC-179 / B-4: ensure no stale turnstile / network error lingers when SSE starts a new stream.
+    setError(null)
     const url = `${API_BASE}/generate/stream?taskId=${encodeURIComponent(taskId)}`
     const es = new EventSource(url)
     eventSourceRef.current = es
@@ -291,7 +294,10 @@ export default function App() {
     es.addEventListener('error', (e) => {
       try {
         const data = JSON.parse((e as MessageEvent).data)
-        setError(data.message || '生成失败，请重试')
+        const msg = data.message || '生成失败，请重试'
+        // SPEC-179 / B-4: never surface a captcha error under ?test.
+        const safeMsg = IS_TEST_MODE && /人机验证/.test(msg) ? '生成失败，请重试' : msg
+        setError(safeMsg)
       } catch {
         setError('连接中断，请重试')
       }
@@ -408,7 +414,11 @@ export default function App() {
 
       if (!res.ok) {
         const data: ErrorResponse = await res.json()
-        setError(data.message || '生成失败，请重试')
+        // SPEC-179 / B-4: under ?test the worker bypasses turnstile, so any 人机验证 text
+        // here is a backend mismatch — don't echo a misleading captcha message to the user.
+        const msg = data.message || '生成失败，请重试'
+        const safeMsg = IS_TEST_MODE && /人机验证/.test(msg) ? '生成失败，请重试' : msg
+        setError(safeMsg)
         setPhase('error')
         setLoading(false)
         return

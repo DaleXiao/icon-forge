@@ -86,7 +86,11 @@ const CORS_HEADERS: Record<string, string> = {
 };
 
 const MAX_QUEUE_SIZE = 10;
-const TASK_TIMEOUT_MS = 120_000;
+// SPEC-179 / B-3: 120s was too tight (prompt 60s + 4×img 10s ≈ 100s). Bump to 180s.
+const TASK_TIMEOUT_MS = 180_000;
+// SPEC-179 / B-1+B-2: single LLM call budget and reasoning ceiling for qwen3.6-max-preview.
+const LLM_FETCH_TIMEOUT_MS = 60_000;
+const LLM_MAX_TOKENS = 2400;
 
 // Origin allowlist — only these front-ends may call the mutating endpoints.
 const ALLOWED_ORIGINS = new Set<string>([
@@ -351,27 +355,43 @@ async function synthesizePrompts(
   gatewayUrl: string,
   model: string = PROMPT_MODEL
 ): Promise<[string, string]> {
+  // SPEC-179 / B-1: cap reasoning_tokens so enable_thinking can't spiral to 90s+.
   const requestBody: PromptChatRequest = {
     model,
     temperature: 0.8,
     enable_thinking: true,
+    max_tokens: LLM_MAX_TOKENS,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: description },
     ],
   };
 
-  // Retry loop for prompt API (handles 429 rate limit)
+  // SPEC-179 / B-2: AbortController so fetch can't sit past LLM_FETCH_TIMEOUT_MS.
+  // Retry loop for prompt API (handles 429 rate limit + per-call timeout).
   let response: Response | null = null;
   for (let attempt = 0; attempt < 3; attempt++) {
-    response = await fetch(`${gatewayUrl}${CHAT_PATH}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(requestBody),
-    });
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), LLM_FETCH_TIMEOUT_MS);
+    try {
+      response = await fetch(`${gatewayUrl}${CHAT_PATH}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(requestBody),
+        signal: ac.signal,
+      });
+    } catch (err) {
+      clearTimeout(t);
+      if ((err as Error)?.name === "AbortError" && attempt < 2) {
+        console.warn(`[prompt-llm] timeout after ${LLM_FETCH_TIMEOUT_MS}ms (attempt ${attempt + 1}/3), retrying...`);
+        continue;
+      }
+      throw new Error(`Prompt API timeout (${LLM_FETCH_TIMEOUT_MS}ms)`);
+    }
+    clearTimeout(t);
 
     if (response.status === 429 && attempt < 2) {
       const delay = Math.min(5000 * Math.pow(2, attempt), 20000);
@@ -442,10 +462,12 @@ async function critiqueAndFix(
   apiKey: string,
   gatewayUrl: string,
 ): Promise<PromptResponse> {
+  // SPEC-179 / B-1+B-2: same max_tokens + AbortController as synthesizePrompts.
   const requestBody: PromptChatRequest = {
     model: CRITIQUE_MODEL,
     temperature: 0.2,
     enable_thinking: true,
+    max_tokens: LLM_MAX_TOKENS,
     messages: [
       { role: "system", content: SYSTEM_PROMPT_CRITIQUE },
       {
@@ -455,14 +477,27 @@ async function critiqueAndFix(
     ],
   };
 
-  const response = await fetch(`${gatewayUrl}${CHAT_PATH}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(requestBody),
-  });
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), LLM_FETCH_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(`${gatewayUrl}${CHAT_PATH}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+      signal: ac.signal,
+    });
+  } catch (err) {
+    clearTimeout(t);
+    if ((err as Error)?.name === "AbortError") {
+      throw new Error(`critique API timeout (${LLM_FETCH_TIMEOUT_MS}ms)`);
+    }
+    throw err;
+  }
+  clearTimeout(t);
   if (!response.ok) {
     // SPEC-160: 401 → 配置问题，不重试
     if (response.status === 401) {
