@@ -24,7 +24,7 @@ All notable changes to `icon-forge` are recorded here. Dates are GMT+8.
 - Prompt synthesis via **Kimi (k2.5)** with code-fence cleanup + Qwen3.6-plus fallback.
 - UI polish: textarea auto-resize, Enter-to-send, Shift+Enter newline; light/dark theme toggle; warm amber palette, Outfit font.
 - `?test` mode to bypass rate limits during testing.
-- Bind `api-icon.weweekly.online` for same-origin calls.
+- Bind `api-icon.openclawd.co` for same-origin calls.
 
 ## v1.0 — 2026-03 (MVP)
 

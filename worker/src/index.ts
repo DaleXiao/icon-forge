@@ -1,6 +1,6 @@
 export interface Env {
   RATE_LIMIT: KVNamespace;
-  // SPEC-160: 改走 api-llm.weweekly.online gateway。
+  // SPEC-160: 改走 api-llm.openclawd.co gateway。
   // 旧 DASHSCOPE_API_KEY secret 由 cindy 在 deploy 阶段移除（保留 30 天 rollback 窗）。
   LLM_SERVICE_TOKEN: string;
   LLM_GATEWAY_URL: string;
@@ -73,7 +73,7 @@ const DAILY_LIMIT = 3;
 const PROMPT_MODEL = "qwen3.6-max-preview";  // T-121: 提升主 prompt 模型 + thinking 补漏
 const CRITIQUE_MODEL = "qwen3.6-max-preview"; // T-121: critique 复用同一 model
 const DASHSCOPE_MODEL = "wan2.7-image-pro";
-// SPEC-160: endpoints 全部走 api-llm.weweekly.online gateway。
+// SPEC-160: endpoints 全部走 api-llm.openclawd.co gateway。
 // Gateway 内部透传到 dashscope，上游响应 schema 不变；icon-forge 解析逻辑 0 修改。
 // chat completions          → /v1/chat/completions    （OpenAI 兼容 shape）
 // multimodal generation     → /v1/images/generations   （native generation 端点）
@@ -90,7 +90,11 @@ const TASK_TIMEOUT_MS = 120_000;
 
 // Origin allowlist — only these front-ends may call the mutating endpoints.
 const ALLOWED_ORIGINS = new Set<string>([
-  "https://icon.weweekly.online",
+  "https://icon.openclawd.co",
+  "https://www.openclawd.co",
+  "https://openclawd.co",
+  "https://www.weweekly.online",
+  "https://weweekly.online",
   "http://localhost:5173",
   "http://localhost:4173",
   "http://127.0.0.1:5173",
@@ -271,7 +275,11 @@ async function checkBurst(
   if (count >= BURST_LIMIT) {
     return { allowed: false, retryAfter: BURST_WINDOW_SECONDS };
   }
-  await kv.put(key, String(count + 1), { expirationTtl: BURST_WINDOW_SECONDS * 2 });
+  try {
+    await kv.put(key, String(count + 1), { expirationTtl: BURST_WINDOW_SECONDS * 2 });
+  } catch (e) {
+    console.warn('[burst] KV put failed (quota?), allowing through:', (e as Error)?.message);
+  }
   return { allowed: true };
 }
 
@@ -324,7 +332,11 @@ async function incrementRateLimit(
   const current = await kv.get(key);
   const count = current ? parseInt(current, 10) : 0;
   const newCount = count + 1;
-  await kv.put(key, newCount.toString(), { expirationTtl: 86400 });
+  try {
+    await kv.put(key, newCount.toString(), { expirationTtl: 86400 });
+  } catch (e) {
+    console.warn('[ratelimit] KV put failed (quota?), allowing through:', (e as Error)?.message);
+  }
   return DAILY_LIMIT - newCount;
 }
 
@@ -1132,13 +1144,22 @@ async function handleGenerate(
   const doId = env.GENERATION_QUEUE.idFromName("singleton");
   const doStub = env.GENERATION_QUEUE.get(doId);
 
-  const doResponse = await doStub.fetch(
-    new Request("https://do/enqueue", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ taskId, description, ip, isTestMode, promptModel }),
-    })
-  );
+  let doResponse: Response;
+  try {
+    doResponse = await doStub.fetch(
+      new Request("https://do/enqueue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taskId, description, ip, isTestMode, promptModel }),
+      })
+    );
+  } catch (e) {
+    console.error("DO enqueue failed:", (e as Error)?.message);
+    return new Response(JSON.stringify({ error: "service_unavailable", message: "生成服务暂时不可用，请稍后重试" }), {
+      status: 503,
+      headers: { "Content-Type": "application/json", ...CORS_HEADERS },
+    });
+  }
 
   // Forward the DO response (either 202 with taskId/position, or 503 queue_full)
   const responseBody = await doResponse.text();

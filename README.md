@@ -2,7 +2,7 @@
 
 AI macOS / iOS App Icon generator. Natural-language prompt → polished 1024×1024 PNG icon, ready for Xcode / Asset Catalog. OAuth-gated, daily free quota + Stripe credits.
 
-**Live**: [icon.weweekly.online](https://icon.weweekly.online)
+**Live**: [icon.openclawd.co](https://icon.openclawd.co)
 
 ## Architecture
 

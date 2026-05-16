@@ -3,13 +3,13 @@ main = "src/index.ts"
 compatibility_date = "2024-12-18"
 
 routes = [
-  { pattern = "api-icon.weweekly.online/*", zone_name = "weweekly.online" }
+  { pattern = "api-icon.openclawd.co/*", zone_name = "openclawd.co" }
 ]
 
 [vars]
 ENVIRONMENT = "production"
 # SPEC-160: LLM API Gateway。仅 URL，访问凭证走 LLM_SERVICE_TOKEN secret。
-LLM_GATEWAY_URL = "https://api-llm.weweekly.online"
+LLM_GATEWAY_URL = "https://api-llm.openclawd.co"
 
 [[kv_namespaces]]
 binding = "RATE_LIMIT"
