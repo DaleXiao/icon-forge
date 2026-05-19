@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useT, toggleLang } from './i18n'
 
 // --- Types ---
 
@@ -26,7 +27,13 @@ type GenerationPhase = 'idle' | 'queued' | 'generating' | 'complete' | 'error'
 
 // --- Constants ---
 
-const EXAMPLE_PROMPTS = ['记事本', '语音输入法', '旅行地图', '播客电台']
+// SPEC-205: example prompts now reference i18n keys; chip label is t(key).
+const EXAMPLE_PROMPT_KEYS = [
+  'example.notebook',
+  'example.voiceInput',
+  'example.travelMap',
+  'example.podcast',
+] as const
 const API_BASE = import.meta.env.PROD ? 'https://api-icon.openclawd.co/api' : '/api'
 const _params = new URLSearchParams(window.location.search)
 const TEST_PARAM = _params.has('test') ? '?test' : ''
@@ -105,12 +112,14 @@ applyTheme(getStoredTheme())
 // --- Theme Toggle Component ---
 
 function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
+  const t = useT()
+  const label = t(theme === 'dark' ? 'theme.toLight' : 'theme.toDark')
   return (
     <button
       onClick={onToggle}
       className="theme-toggle fixed top-5 right-5 z-50 w-10 h-10 rounded-full flex items-center justify-center bg-white/80 dark:bg-warm-850/80 border border-warm-200 dark:border-warm-700/40 shadow-warm-sm dark:shadow-warm-md backdrop-blur-sm focus-warm"
-      aria-label={theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'}
-      title={theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'}
+      aria-label={label}
+      title={label}
     >
       {theme === 'dark' ? (
         // Sun icon — shown in dark mode, click to go light
@@ -128,9 +137,28 @@ function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }
   )
 }
 
+// --- Lang Toggle Component ---
+
+// SPEC-205: sits next to ThemeToggle in the top-right; label shows the OTHER
+// language (i.e. what you'd flip to). Mirrors prod bundle's lang button.
+function LangToggle() {
+  const t = useT()
+  return (
+    <button
+      onClick={() => toggleLang()}
+      className="theme-toggle fixed top-5 right-16 z-50 h-10 min-w-10 px-3 rounded-full flex items-center justify-center bg-white/80 dark:bg-warm-850/80 border border-warm-200 dark:border-warm-700/40 shadow-warm-sm dark:shadow-warm-md backdrop-blur-sm focus-warm text-sm font-medium text-warm-700 dark:text-warm-300"
+      aria-label={t('lang.toggleTitle')}
+      title={t('lang.toggleTitle')}
+    >
+      {t('lang.toggleLabel')}
+    </button>
+  )
+}
+
 // --- App Component ---
 
 export default function App() {
+  const t = useT()
   const [description, setDescription] = useState('')
   const [loading, setLoading] = useState(false)
   const [icons, setIcons] = useState<IconResult[]>([])
@@ -291,9 +319,9 @@ export default function App() {
     es.addEventListener('error', (e) => {
       try {
         const data = JSON.parse((e as MessageEvent).data)
-        setError(data.message || '生成失败，请重试')
+        setError(data.message || t('err.generateFailed'))
       } catch {
-        setError('连接中断，请重试')
+        setError(t('err.connectionBroken'))
       }
       setPhase('error')
       setLoading(false)
@@ -319,7 +347,7 @@ export default function App() {
       } else {
         setPhase((prev) => {
           if (prev === 'complete' || prev === 'error') return prev
-          setError('连接中断，请重试')
+          setError(t('err.connectionBroken'))
           setLoading(false)
           return 'error'
         })
@@ -344,11 +372,11 @@ export default function App() {
   const handleGenerate = useCallback(async () => {
     const trimmed = description.trim()
     if (!trimmed || trimmed.length < 2) {
-      setError('请输入至少 2 个字的描述')
+      setError(t('err.tooShort'))
       return
     }
     if (trimmed.length > 200) {
-      setError('描述不能超过 200 字')
+      setError(t('err.tooLong'))
       return
     }
 
@@ -391,7 +419,7 @@ export default function App() {
 
       if (res.status === 503) {
         const data = await res.json()
-        setError(data.message || '当前使用人数较多，请 30 秒后再试')
+        setError(data.message || t('err.tooBusy'))
         setPhase('error')
         setLoading(false)
         startRetryCountdown(data.retryAfter || 30)
@@ -408,7 +436,7 @@ export default function App() {
 
       if (!res.ok) {
         const data: ErrorResponse = await res.json()
-        setError(data.message || '生成失败，请重试')
+        setError(data.message || t('err.generateFailed'))
         setPhase('error')
         setLoading(false)
         return
@@ -419,11 +447,11 @@ export default function App() {
       setQueuePosition(data.position)
       startSSE(data.taskId)
     } catch {
-      setError('网络错误，请检查连接后重试')
+      setError(t('err.network'))
       setPhase('error')
       setLoading(false)
     }
-  }, [description])
+  }, [description, t])
 
   function handleExampleClick(prompt: string) {
     setDescription(prompt)
@@ -459,8 +487,9 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col items-center px-5 py-16 sm:py-24 bg-[#FAFAF7] dark:bg-warm-950">
-      {/* Theme Toggle */}
+      {/* Theme + Lang Toggles */}
       <ThemeToggle theme={theme} onToggle={toggleTheme} />
+      <LangToggle />
 
       {/* Header */}
       <header className="text-center mb-12 sm:mb-16 animate-fade-in">
@@ -471,7 +500,7 @@ export default function App() {
           Icon Forge
         </h1>
         <p className="mt-2.5 text-warm-500 dark:text-warm-400 text-base sm:text-lg font-light tracking-wide">
-          描述你的 App，生成精美图标
+          {t('hero.title')}
         </p>
       </header>
 
@@ -486,7 +515,7 @@ export default function App() {
               setError(null)
             }}
             onKeyDown={handleKeyDown}
-            placeholder="描述你的 app..."
+            placeholder={t('input.placeholder')}
             maxLength={200}
             disabled={loading}
             rows={1}
@@ -516,26 +545,30 @@ export default function App() {
             {loading ? (
               <span className="flex items-center gap-2">
                 <LoadingSpinner />
-                <span>生成中</span>
+                <span>{t('btn.generating')}</span>
               </span>
             ) : (
-              <span>生成</span>
+              <span>{t('btn.generate')}</span>
             )}
           </button>
         </div>
 
-        {/* Example prompts */}
+        {/* Example prompts — labels reactive to lang. handleExampleClick still
+            receives the localized string so the textarea gets a sensible value. */}
         <div className="mt-5 flex flex-wrap gap-2 justify-center stagger">
-          {EXAMPLE_PROMPTS.map((prompt) => (
-            <button
-              key={prompt}
-              onClick={() => handleExampleClick(prompt)}
-              disabled={loading}
-              className="example-pill text-sm text-warm-500 px-3 py-1.5 rounded-full border border-warm-200 dark:border-warm-800/50 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {prompt}
-            </button>
-          ))}
+          {EXAMPLE_PROMPT_KEYS.map((key) => {
+            const label = t(key)
+            return (
+              <button
+                key={key}
+                onClick={() => handleExampleClick(label)}
+                disabled={loading}
+                className="example-pill text-sm text-warm-500 px-3 py-1.5 rounded-full border border-warm-200 dark:border-warm-800/50 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {label}
+              </button>
+            )
+          })}
         </div>
 
         {/* Error message */}
@@ -552,12 +585,12 @@ export default function App() {
           {/* Status text */}
           <p className="text-center text-warm-500 dark:text-warm-600 text-sm font-light mb-5 tracking-wide">
             {phase === 'queued' && queuePosition > 1
-              ? `排队中，前面 ${queuePosition - 1} 人...`
+              ? t('status.queue', { n: queuePosition - 1 })
               : phase === 'queued'
-                ? '准备中...'
+                ? t('status.preparing')
                 : phase === 'generating'
-                  ? <><svg className="inline-block w-3.5 h-3.5 mr-1.5 -mt-px animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="4.22" y1="4.22" x2="6.34" y2="6.34"/><line x1="17.66" y1="17.66" x2="19.78" y2="19.78"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/><line x1="4.22" y1="19.78" x2="6.34" y2="17.66"/><line x1="17.66" y1="6.34" x2="19.78" y2="4.22"/></svg>正在锻造 <span className="text-warm-700 dark:text-warm-400 font-medium tabular-nums">{progress}%</span></>
-                  : '生成中...'}
+                  ? <><svg className="inline-block w-3.5 h-3.5 mr-1.5 -mt-px animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="4.22" y1="4.22" x2="6.34" y2="6.34"/><line x1="17.66" y1="17.66" x2="19.78" y2="19.78"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/><line x1="4.22" y1="19.78" x2="6.34" y2="17.66"/><line x1="17.66" y1="6.34" x2="19.78" y2="4.22"/></svg>{t('status.forging')}<span className="text-warm-700 dark:text-warm-400 font-medium tabular-nums">{progress}%</span></>
+                  : t('status.generating')}
           </p>
           {/* Grid: show arrived icons + shimmer for pending */}
           <div className="grid grid-cols-2 gap-5 sm:gap-6">
@@ -574,7 +607,7 @@ export default function App() {
           </div>
           {/* Don't refresh hint */}
           <p className="text-center text-warm-400 dark:text-warm-700 text-xs font-light mt-4 tracking-wide">
-            请不要关闭或刷新页面
+            {t('status.dontClose')}
           </p>
         </div>
       )}
@@ -598,7 +631,7 @@ export default function App() {
       {retryCountdown > 0 && !loading && (
         <div className="mt-5 text-center animate-fade-in">
           <p className="text-warm-500 dark:text-warm-600 text-sm font-light">
-            <span className="text-warm-700 dark:text-warm-400 font-medium tabular-nums">{retryCountdown}</span> 秒后可重试
+            <span className="text-warm-700 dark:text-warm-400 font-medium tabular-nums">{retryCountdown}</span> {t('status.retryAfter')}
           </p>
         </div>
       )}
@@ -608,15 +641,15 @@ export default function App() {
         <div className="mt-10 text-center animate-fade-in">
           {rateLimited ? (
             <p className="text-warm-500 dark:text-warm-600 text-sm font-light">
-              内测中，每日限额已用完，请明天再来
+              {t('quota.dailyExhausted')}
             </p>
           ) : (
             <p className="text-warm-500 dark:text-warm-600 text-sm font-light tracking-wide">
-              今日剩余{' '}
+              {t('quota.todayLeft')}{' '}
               <span className="text-warm-700 dark:text-warm-400 font-medium tabular-nums">
                 {remaining}/{total}
               </span>{' '}
-              次
+              {t('quota.timesUnit')}
             </p>
           )}
         </div>
@@ -625,7 +658,7 @@ export default function App() {
       {/* Footer */}
       <footer className="mt-auto pt-20 pb-8">
         <a href="https://openclawd.co" target="_blank" rel="noopener" className="text-warm-400 dark:text-warm-700 text-xs font-light tracking-wider hover:text-warm-500 dark:hover:text-warm-500 transition-colors" style={{textDecoration:'none'}}>
-          Tinker Lab / 折腾实验室
+          {t('footer.brand')}
         </a>
       </footer>
     </div>
@@ -676,6 +709,7 @@ function IconCard({
   icon: IconResult
   onDownload: (url: string, index: number) => void
 }) {
+  const t = useT()
   return (
     <div className="icon-card rounded-2.5xl overflow-hidden bg-white dark:bg-warm-900/60 border border-warm-200 dark:border-warm-800/30 shadow-warm-sm dark:shadow-card animate-slide-up">
       {/* Icon display area — matches page bg in light, dark in dark mode */}
@@ -694,7 +728,7 @@ function IconCard({
           className="w-full py-2.5 rounded-xl bg-warm-50 dark:bg-warm-850 hover:bg-warm-100 dark:hover:bg-warm-800 text-warm-600 dark:text-warm-400 hover:text-warm-700 dark:hover:text-warm-300 text-sm font-medium transition-colors flex items-center justify-center gap-2 focus-warm"
         >
           <DownloadIcon />
-          <span>下载 PNG</span>
+          <span>{t('btn.downloadPng')}</span>
         </button>
       </div>
     </div>
