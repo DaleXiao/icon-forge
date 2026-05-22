@@ -55,12 +55,14 @@ chk('COMPAT_API_URL constant is removed',
   !/^const COMPAT_API_URL\s*=/m.test(src));
 
 // ---------- (B) PROMPT_MODEL upgraded ----------
-chk('PROMPT_MODEL = qwen3.6-max-preview',
-  /const PROMPT_MODEL\s*=\s*"qwen3\.6-max-preview"/.test(src));
+chk('PROMPT_MODEL = qwen3.7-max',
+  /const PROMPT_MODEL\s*=\s*"qwen3\.7-max"/.test(src));
 chk('PROMPT_MODEL is no longer qwen3.6-plus',
   !/const PROMPT_MODEL\s*=\s*"qwen3\.6-plus"/.test(src));
-chk('CRITIQUE_MODEL exported (max-preview, reuses same model)',
-  /const CRITIQUE_MODEL\s*=\s*"qwen3\.6-max-preview"/.test(src));
+chk('PROMPT_MODEL is no longer qwen3.6-max-preview (upgraded to 3.7)',
+  !/const PROMPT_MODEL\s*=\s*"qwen3\.6-max-preview"/.test(src));
+chk('CRITIQUE_MODEL exported (qwen3.7-max, reuses same model)',
+  /const CRITIQUE_MODEL\s*=\s*"qwen3\.7-max"/.test(src));
 chk('synthesizePrompts request body still passes enable_thinking: true',
   /async function synthesizePrompts[\s\S]*?enable_thinking:\s*true/.test(src));
 chk('critiqueAndFix request body passes enable_thinking: true',
