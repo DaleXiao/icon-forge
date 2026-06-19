@@ -381,6 +381,8 @@ async function synthesizePrompts(
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
+        // SPEC-285 迁移#1：标注 usecase，网关自动发现 + 允许 dashboard 热切（不设 override 时仍用 body.model）
+        "x-llm-usecase": "prompt-gen",
       },
       body: JSON.stringify(requestBody),
     });
@@ -472,6 +474,8 @@ async function critiqueAndFix(
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
+      // SPEC-285 迁移#1：critique 场景 usecase
+      "x-llm-usecase": "critique",
     },
     body: JSON.stringify(requestBody),
   });
@@ -540,6 +544,8 @@ async function generateIcon(
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
+        // SPEC-285 迁移#1：icon 生成场景 usecase
+        "x-llm-usecase": "icon-image",
       },
       body: JSON.stringify({
         model: DASHSCOPE_MODEL,
@@ -623,6 +629,8 @@ async function removeBackground(imageUrl: string, apiKey: string, gatewayUrl: st
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
+          // SPEC-285 迁移#1：抠图去背景场景 usecase
+          "x-llm-usecase": "remove-bg",
         },
         body: JSON.stringify({
           model: "wan2.7-image-pro",
