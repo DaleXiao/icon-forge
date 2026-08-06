@@ -53,6 +53,7 @@ interface QueueTask {
   description: string;
   ip: string;
   isTestMode: boolean;
+  testRemaining?: number;
   promptModel: string;
   status: "queued" | "generating" | "complete" | "error";
   icons: Array<{ url: string; index: number }>;
@@ -70,6 +71,10 @@ interface SSEWriter {
 // --- Constants ---
 
 const DAILY_LIMIT = 3;
+// Dale 2026-08-06: keep ?test for real end-to-end testing, but cap its
+// paid output globally. Icon Forge generates two images per queued task.
+const TEST_DAILY_IMAGE_LIMIT = 100;
+const TEST_IMAGES_PER_TASK = 2;
 const PROMPT_MODEL = "qwen3.7-max";  // SPEC-235 followup: 3.7 比 3.6-max-preview 快 2.6x 同质量 (offline bench 8/8 pass, 28s vs 73s avg)
 const CRITIQUE_MODEL = "qwen3.7-max"; // critique 同 model
 const DASHSCOPE_MODEL = "wan2.7-image-pro";
@@ -722,6 +727,10 @@ export class GenerationQueue {
       return this.handleStatus(request);
     }
 
+    if (path === "/test-quota" && request.method === "GET") {
+      return this.handleTestQuota();
+    }
+
     return new Response("Not Found", { status: 404 });
   }
 
@@ -749,11 +758,29 @@ export class GenerationQueue {
       );
     }
 
+    let testRemaining: number | undefined;
+    if (body.isTestMode) {
+      const budget = await this.reserveTestImages(TEST_IMAGES_PER_TASK);
+      if (!budget.allowed) {
+        return jsonResponse(
+          {
+            error: "test_daily_limit",
+            message: `测试模式每天最多生成 ${TEST_DAILY_IMAGE_LIMIT} 张图片，请明天再试`,
+            remaining: budget.remaining,
+            total: TEST_DAILY_IMAGE_LIMIT,
+          },
+          429
+        );
+      }
+      testRemaining = budget.remaining;
+    }
+
     const task: QueueTask = {
       taskId: body.taskId,
       description: body.description,
       ip: body.ip,
       isTestMode: body.isTestMode,
+      testRemaining,
       promptModel: body.promptModel || PROMPT_MODEL,
       status: "queued",
       icons: [],
@@ -769,6 +796,32 @@ export class GenerationQueue {
     }
 
     return jsonResponse({ taskId: task.taskId, position }, 202);
+  }
+
+  private testBudgetKey(now = new Date()): string {
+    return `test-images:${now.toISOString().slice(0, 10)}`;
+  }
+
+  /** Reserve before enqueue so concurrent test requests cannot exceed spend. */
+  private async reserveTestImages(count: number): Promise<{ allowed: boolean; remaining: number }> {
+    const key = this.testBudgetKey();
+    return this.state.storage.transaction(async (tx) => {
+      const used = (await tx.get<number>(key)) ?? 0;
+      if (used + count > TEST_DAILY_IMAGE_LIMIT) {
+        return { allowed: false, remaining: Math.max(0, TEST_DAILY_IMAGE_LIMIT - used) };
+      }
+      const next = used + count;
+      await tx.put(key, next);
+      return { allowed: true, remaining: TEST_DAILY_IMAGE_LIMIT - next };
+    });
+  }
+
+  private async handleTestQuota(): Promise<Response> {
+    const used = (await this.state.storage.get<number>(this.testBudgetKey())) ?? 0;
+    return jsonResponse({
+      remaining: Math.max(0, TEST_DAILY_IMAGE_LIMIT - used),
+      total: TEST_DAILY_IMAGE_LIMIT,
+    });
   }
 
   private handleStream(request: Request): Response {
@@ -959,7 +1012,7 @@ export class GenerationQueue {
 
         // Step 4: Increment rate limit (deferred billing)
         const remaining = task.isTestMode
-          ? 99
+          ? (task.testRemaining ?? 0)
           : await incrementRateLimit(this.env.RATE_LIMIT, task.ip);
         task.remaining = remaining;
 
@@ -1223,10 +1276,8 @@ async function handleQuota(
   const isTestMode = url.searchParams.has("test");
 
   if (isTestMode) {
-    return new Response(JSON.stringify({ remaining: 99, total: 99 }), {
-      status: 200,
-      headers: { "Content-Type": "application/json", ...CORS_HEADERS },
-    });
+    const doId = env.GENERATION_QUEUE.idFromName("singleton");
+    return env.GENERATION_QUEUE.get(doId).fetch("https://do/test-quota");
   }
 
   const ip = getClientIP(request);
