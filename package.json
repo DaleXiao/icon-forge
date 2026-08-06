@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "tsc && vite build && npm run check:dist",
+    "check:dist": "node scripts/assert-production-dist.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
