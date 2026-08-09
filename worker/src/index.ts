@@ -272,6 +272,9 @@ function getTodayKey(ip: string): string {
 
 const SESSION_COOKIE = "trusted_session";
 const SESSION_CONTEXT = "trusted-session-v1";
+const POW_CONTEXT = "pow-challenge-v1";
+const POW_DIFFICULTY = 18;
+const POW_TTL_MS = 2 * 60_000;
 
 type TrustedSession = { sid: string; exp: number };
 
@@ -346,13 +349,75 @@ async function incrementSessionLimit(kv: KVNamespace, sessionId: string): Promis
   return Math.max(0, DAILY_LIMIT - next);
 }
 
+type PowPayload = { nonce: string; exp: number; ipTag: string };
+
+async function hmacValue(secret: string, context: string, payload: string): Promise<string> {
+  const bytes = new Uint8Array(await crypto.subtle.sign(
+    "HMAC", await sessionKey(secret), new TextEncoder().encode(`${context}.${payload}`)
+  ));
+  return base64Url(bytes);
+}
+
+async function ipTag(secret: string, ip: string): Promise<string> {
+  return (await hmacValue(secret, "pow-ip-v1", ip)).slice(0, 16);
+}
+
+async function issuePowChallenge(request: Request, env: Env): Promise<Response> {
+  if (!env.TURNSTILE_SECRET) return jsonResponse({ error: "verification_unavailable" }, 503);
+  const payload: PowPayload = {
+    nonce: crypto.randomUUID(),
+    exp: Date.now() + POW_TTL_MS,
+    ipTag: await ipTag(env.TURNSTILE_SECRET, getClientIP(request)),
+  };
+  const encoded = base64Url(new TextEncoder().encode(JSON.stringify(payload)));
+  const signature = await hmacValue(env.TURNSTILE_SECRET, POW_CONTEXT, encoded);
+  return jsonResponse({ challenge: `${encoded}.${signature}`, difficulty: POW_DIFFICULTY }, 200);
+}
+
+function hasLeadingZeroBits(bytes: Uint8Array, bits: number): boolean {
+  const full = Math.floor(bits / 8);
+  for (let i = 0; i < full; i++) if (bytes[i] !== 0) return false;
+  const remainder = bits % 8;
+  return remainder === 0 || (bytes[full] & (0xff << (8 - remainder))) === 0;
+}
+
+async function verifyPow(
+  request: Request, env: Env, challenge: string, counter: number
+): Promise<boolean> {
+  if (!env.TURNSTILE_SECRET || !Number.isSafeInteger(counter) || counter < 0 || counter > 4_194_304) return false;
+  const [encoded, signature, extra] = challenge.split(".");
+  if (!encoded || !signature || extra) return false;
+  const expected = await hmacValue(env.TURNSTILE_SECRET, POW_CONTEXT, encoded);
+  if (expected.length !== signature.length) return false;
+  let different = 0;
+  for (let i = 0; i < expected.length; i++) different |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
+  if (different !== 0) return false;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(fromBase64Url(encoded))) as PowPayload;
+    if (!payload.nonce || payload.exp < Date.now() || payload.exp > Date.now() + POW_TTL_MS + 5_000) return false;
+    if (payload.ipTag !== await ipTag(env.TURNSTILE_SECRET, getClientIP(request))) return false;
+    const replayKey = `pow-used:${payload.nonce}`;
+    if (await env.RATE_LIMIT.get(replayKey)) return false;
+    const digest = new Uint8Array(await crypto.subtle.digest(
+      "SHA-256", new TextEncoder().encode(`${challenge}:${counter}`)
+    ));
+    if (!hasLeadingZeroBits(digest, POW_DIFFICULTY)) return false;
+    await env.RATE_LIMIT.put(replayKey, "1", { expirationTtl: 180 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function handleSessionBootstrap(request: Request, env: Env): Promise<Response> {
-  let token = "";
-  try { token = String(((await request.json()) as { turnstileToken?: string }).turnstileToken || ""); }
+  let body: { turnstileToken?: string; powChallenge?: string; powCounter?: number };
+  try { body = await request.json() as typeof body; }
   catch { return jsonResponse({ error: "invalid_input", message: "无效的验证请求" }, 400); }
   const ip = getClientIP(request);
-  if (!await verifyTurnstile(token, env, ip) || !env.TURNSTILE_SECRET) {
-    return jsonResponse({ error: "turnstile_failed", message: "人机验证未通过，请重试" }, 403);
+  const turnstileOk = !!body.turnstileToken && await verifyTurnstile(body.turnstileToken, env, ip);
+  const powOk = !!body.powChallenge && await verifyPow(request, env, body.powChallenge, Number(body.powCounter));
+  if ((!turnstileOk && !powOk) || !env.TURNSTILE_SECRET) {
+    return jsonResponse({ error: "verification_failed", message: "安全验证未通过，请重试" }, 403);
   }
   const { value, session } = await issueTrustedSession(env.TURNSTILE_SECRET);
   const maxAge = Math.max(1, Math.floor((session.exp - Date.now()) / 1000));
@@ -1412,6 +1477,11 @@ export default {
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
+    }
+
+    if (path === "/api/pow-challenge" && request.method === "POST") {
+      if (!isAllowedOrigin(request)) return jsonResponse({ error: "forbidden" }, 403);
+      return issuePowChallenge(request, env);
     }
 
     if (path === "/api/session" && request.method === "POST") {

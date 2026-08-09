@@ -61,7 +61,7 @@ function getTurnstileToken(): Promise<string> {
       try { document.body.removeChild(host) } catch {}
       fn()
     }
-    const timer = setTimeout(() => done(() => reject(new Error('turnstile timeout'))), 60_000)
+    const timer = setTimeout(() => done(() => reject(new Error('turnstile timeout'))), 12_000)
     try {
       ts.render(host, {
         sitekey: TURNSTILE_SITE_KEY,
@@ -78,17 +78,57 @@ function getTurnstileToken(): Promise<string> {
   })
 }
 
-async function establishTrustedSession(): Promise<void> {
-  const turnstileToken = await getTurnstileToken()
-  const res = await fetch(`${API_BASE}/session`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ turnstileToken }),
+function leadingZeroBits(bytes: Uint8Array): number {
+  let bits = 0
+  for (const byte of bytes) {
+    if (byte === 0) { bits += 8; continue }
+    bits += Math.clz32(byte) - 24
+    break
+  }
+  return bits
+}
+
+async function solvePow(): Promise<{ powChallenge: string; powCounter: number }> {
+  const challengeRes = await fetch(`${API_BASE}/pow-challenge`, {
+    method: 'POST', credentials: 'include',
   })
+  if (!challengeRes.ok) throw new Error('安全验证暂时不可用')
+  const { challenge, difficulty } = await challengeRes.json() as { challenge: string; difficulty: number }
+  const encoder = new TextEncoder()
+  // Small parallel batches keep the UI responsive while making scripted abuse costly.
+  for (let base = 0; base <= 4_194_304; base += 128) {
+    const digests = await Promise.all(Array.from({ length: 128 }, (_, i) =>
+      crypto.subtle.digest('SHA-256', encoder.encode(`${challenge}:${base + i}`))))
+    const found = digests.findIndex((digest) => leadingZeroBits(new Uint8Array(digest)) >= difficulty)
+    if (found >= 0) return { powChallenge: challenge, powCounter: base + found }
+    if (base % 2048 === 0) await new Promise<void>((resolve) => setTimeout(resolve, 0))
+  }
+  throw new Error('安全验证计算超时，请重试')
+}
+
+async function postSession(body: Record<string, unknown>): Promise<Response> {
+  return fetch(`${API_BASE}/session`, {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+async function establishTrustedSession(): Promise<void> {
+  let res: Response | null = null
+  try {
+    const turnstileToken = await getTurnstileToken()
+    res = await postSession({ turnstileToken })
+    if (res.ok) return
+  } catch (error) {
+    console.warn('Turnstile unavailable; using first-party verification fallback', error)
+  }
+
+  const proof = await solvePow()
+  res = await postSession(proof)
   if (!res.ok) {
     const data = await res.json().catch(() => ({})) as Partial<ErrorResponse>
-    throw new Error(data.message || '人机验证未通过，请重试')
+    throw new Error(data.message || '安全验证未通过，请重试')
   }
 }
 
