@@ -273,7 +273,7 @@ function getTodayKey(ip: string): string {
 const SESSION_COOKIE = "trusted_session";
 const SESSION_CONTEXT = "trusted-session-v1";
 const POW_CONTEXT = "pow-challenge-v1";
-const POW_DIFFICULTY = 18;
+const POW_DIFFICULTY = 16;
 const POW_TTL_MS = 2 * 60_000;
 
 type TrustedSession = { sid: string; exp: number };
