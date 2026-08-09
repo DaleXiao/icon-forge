@@ -52,6 +52,7 @@ interface QueueTask {
   taskId: string;
   description: string;
   ip: string;
+  sessionId?: string;
   isTestMode: boolean;
   testRemaining?: number;
   promptModel: string;
@@ -85,7 +86,8 @@ const DASHSCOPE_MODEL = "wan2.7-image-pro";
 const CHAT_PATH = "/v1/chat/completions";
 const IMAGE_PATH = "/v1/images/generations";
 const CORS_HEADERS: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": "https://icon.openclawd.co",
+  "Access-Control-Allow-Credentials": "true",
   "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
@@ -266,6 +268,102 @@ function getClientIP(request: Request): string {
 function getTodayKey(ip: string): string {
   const today = new Date().toISOString().slice(0, 10);
   return `limit:${ip}:${today}`;
+}
+
+const SESSION_COOKIE = "trusted_session";
+const SESSION_CONTEXT = "trusted-session-v1";
+
+type TrustedSession = { sid: string; exp: number };
+
+function base64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function fromBase64Url(value: string): Uint8Array {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const binary = atob(normalized + "=".repeat((4 - normalized.length % 4) % 4));
+  return Uint8Array.from(binary, (c) => c.charCodeAt(0));
+}
+
+async function sessionKey(secret: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]
+  );
+}
+
+async function issueTrustedSession(secret: string): Promise<{ value: string; session: TrustedSession }> {
+  const now = Date.now();
+  const nextUtcDay = Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth(), new Date(now).getUTCDate() + 1);
+  const session: TrustedSession = { sid: crypto.randomUUID(), exp: Math.min(now + 86_400_000, nextUtcDay) };
+  const payload = base64Url(new TextEncoder().encode(JSON.stringify(session)));
+  const message = new TextEncoder().encode(`${SESSION_CONTEXT}.${payload}`);
+  const signature = new Uint8Array(await crypto.subtle.sign("HMAC", await sessionKey(secret), message));
+  return { value: `${payload}.${base64Url(signature)}`, session };
+}
+
+async function verifyTrustedSession(request: Request, secret?: string): Promise<TrustedSession | null> {
+  if (!secret) return null;
+  const raw = request.headers.get("Cookie")?.split(";").map((v) => v.trim())
+    .find((v) => v.startsWith(`${SESSION_COOKIE}=`))?.slice(SESSION_COOKIE.length + 1);
+  if (!raw) return null;
+  const [payload, signature, extra] = raw.split(".");
+  if (!payload || !signature || extra) return null;
+  try {
+    const valid = await crypto.subtle.verify(
+      "HMAC", await sessionKey(secret), fromBase64Url(signature),
+      new TextEncoder().encode(`${SESSION_CONTEXT}.${payload}`)
+    );
+    if (!valid) return null;
+    const parsed = JSON.parse(new TextDecoder().decode(fromBase64Url(payload))) as TrustedSession;
+    if (!parsed.sid || !Number.isFinite(parsed.exp) || parsed.exp <= Date.now()) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function sessionLimitKey(sessionId: string): string {
+  const today = new Date().toISOString().slice(0, 10);
+  return `session-limit:${sessionId}:${today}`;
+}
+
+async function getCount(kv: KVNamespace, key: string): Promise<number> {
+  const raw = await kv.get(key);
+  return raw ? parseInt(raw, 10) || 0 : 0;
+}
+
+async function checkSessionLimit(kv: KVNamespace, sessionId: string): Promise<{ allowed: boolean; remaining: number }> {
+  const count = await getCount(kv, sessionLimitKey(sessionId));
+  return { allowed: count < DAILY_LIMIT, remaining: Math.max(0, DAILY_LIMIT - count) };
+}
+
+async function incrementSessionLimit(kv: KVNamespace, sessionId: string): Promise<number> {
+  const key = sessionLimitKey(sessionId);
+  const next = await getCount(kv, key) + 1;
+  await kv.put(key, String(next), { expirationTtl: 86400 });
+  return Math.max(0, DAILY_LIMIT - next);
+}
+
+async function handleSessionBootstrap(request: Request, env: Env): Promise<Response> {
+  let token = "";
+  try { token = String(((await request.json()) as { turnstileToken?: string }).turnstileToken || ""); }
+  catch { return jsonResponse({ error: "invalid_input", message: "无效的验证请求" }, 400); }
+  const ip = getClientIP(request);
+  if (!await verifyTurnstile(token, env, ip) || !env.TURNSTILE_SECRET) {
+    return jsonResponse({ error: "turnstile_failed", message: "人机验证未通过，请重试" }, 403);
+  }
+  const { value, session } = await issueTrustedSession(env.TURNSTILE_SECRET);
+  const maxAge = Math.max(1, Math.floor((session.exp - Date.now()) / 1000));
+  return new Response(JSON.stringify({ ok: true, expiresAt: session.exp }), {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json",
+      "Set-Cookie": `${SESSION_COOKIE}=${value}; Max-Age=${maxAge}; Path=/api; HttpOnly; Secure; SameSite=Strict`,
+      ...CORS_HEADERS,
+    },
+  });
 }
 
 // --- Rate limiting (check only, no increment) ---
@@ -739,6 +837,7 @@ export class GenerationQueue {
       taskId: string;
       description: string;
       ip: string;
+      sessionId?: string;
       isTestMode: boolean;
       promptModel: string;
     };
@@ -779,6 +878,7 @@ export class GenerationQueue {
       taskId: body.taskId,
       description: body.description,
       ip: body.ip,
+      sessionId: body.sessionId,
       isTestMode: body.isTestMode,
       testRemaining,
       promptModel: body.promptModel || PROMPT_MODEL,
@@ -1013,7 +1113,10 @@ export class GenerationQueue {
         // Step 4: Increment rate limit (deferred billing)
         const remaining = task.isTestMode
           ? (task.testRemaining ?? 0)
-          : await incrementRateLimit(this.env.RATE_LIMIT, task.ip);
+          : Math.min(
+              await incrementRateLimit(this.env.RATE_LIMIT, task.ip),
+              task.sessionId ? await incrementSessionLimit(this.env.RATE_LIMIT, task.sessionId) : 0,
+            );
         task.remaining = remaining;
 
         // Complete
@@ -1165,22 +1268,21 @@ async function handleGenerate(
   const isTestMode = url.searchParams.has("test");
   const promptModel = PROMPT_MODEL;
 
-  // Burst limit (short window) before daily quota.
+  let trustedSession: TrustedSession | null = null;
+  // Test mode keeps its separately capped test quota. Production generation
+  // requires a server-signed anonymous session, established once via Turnstile.
   if (!isTestMode) {
-    const ok = await verifyTurnstile(body.turnstileToken || "", env, ip);
-    if (!ok) {
+    trustedSession = await verifyTrustedSession(request, env.TURNSTILE_SECRET);
+    if (!trustedSession) {
       return jsonResponse(
-        { error: "turnstile_failed", message: "人机验证未通过，请刷新重试" },
-        403
+        { error: "verification_required", message: "需要完成一次安全验证" },
+        401
       );
     }
     const burst = await checkBurst(env.RATE_LIMIT, ip);
     if (!burst.allowed) {
       return jsonResponse(
-        {
-          error: "rate_limited_burst",
-          message: `请求太快，请 ${burst.retryAfter}s 后再试`,
-        },
+        { error: "rate_limited_burst", message: `请求太快，请 ${burst.retryAfter}s 后再试` },
         429
       );
     }
@@ -1200,6 +1302,16 @@ async function handleGenerate(
     }
   }
 
+  if (!isTestMode && trustedSession) {
+    const sessionQuota = await checkSessionLimit(env.RATE_LIMIT, trustedSession.sid);
+    if (!sessionQuota.allowed) {
+      return jsonResponse(
+        { error: "rate_limited", message: "内测中，每日限额已用完，请明天再来 🙂" },
+        429
+      );
+    }
+  }
+
   // Forward to Durable Object
   const taskId = generateTaskId();
   const doId = env.GENERATION_QUEUE.idFromName("singleton");
@@ -1211,7 +1323,7 @@ async function handleGenerate(
       new Request("https://do/enqueue", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ taskId, description, ip, isTestMode, promptModel }),
+        body: JSON.stringify({ taskId, description, ip, sessionId: trustedSession?.sid, isTestMode, promptModel }),
       })
     );
   } catch (e) {
@@ -1300,6 +1412,13 @@ export default {
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
+    }
+
+    if (path === "/api/session" && request.method === "POST") {
+      if (!isAllowedOrigin(request)) {
+        return jsonResponse({ error: "forbidden", message: "origin not allowed" }, 403);
+      }
+      return handleSessionBootstrap(request, env);
     }
 
     if (path === "/api/generate" && request.method === "POST") {

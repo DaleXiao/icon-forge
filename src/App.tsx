@@ -41,19 +41,18 @@ const TEST_PARAM = _params.has('test') ? '?test' : ''
 // Cloudflare Turnstile site key (public, safe to ship in bundle).
 const TURNSTILE_SITE_KEY = '0x4AAAAAADCaJjLh7I5xepTX'
 
+// Managed Turnstile stays visually absent for low-risk users (`interaction-only`)
+// but has a real, clickable 300×65 host when Cloudflare asks for interaction.
 function getTurnstileToken(): Promise<string> {
   return new Promise((resolve, reject) => {
     // @ts-expect-error — turnstile is loaded via index.html <script>
     const ts = window.turnstile
-    if (!ts) {
-      reject(new Error('turnstile not loaded'))
-      return
-    }
-    // Invisible widget needs a rendered (non-display:none) container.
+    if (!ts) { reject(new Error('turnstile not loaded')); return }
+
     const host = document.createElement('div')
-    host.setAttribute('aria-hidden', 'true')
+    host.setAttribute('aria-label', '安全验证')
     host.style.cssText =
-      'position:fixed;bottom:0;right:0;width:0;height:0;overflow:hidden;pointer-events:none;opacity:0;'
+      'position:fixed;right:20px;bottom:20px;z-index:9999;width:300px;min-height:65px;pointer-events:auto;'
     document.body.appendChild(host)
     let settled = false
     const done = (fn: () => void) => {
@@ -62,11 +61,12 @@ function getTurnstileToken(): Promise<string> {
       try { document.body.removeChild(host) } catch {}
       fn()
     }
-    const timer = setTimeout(() => done(() => reject(new Error('turnstile timeout (10s)'))), 10_000)
+    const timer = setTimeout(() => done(() => reject(new Error('turnstile timeout'))), 60_000)
     try {
       ts.render(host, {
         sitekey: TURNSTILE_SITE_KEY,
-        size: 'invisible',
+        size: 'normal',
+        appearance: 'interaction-only',
         callback: (token: string) => { clearTimeout(timer); done(() => resolve(token)) },
         'error-callback': () => { clearTimeout(timer); done(() => reject(new Error('turnstile error'))) },
         'timeout-callback': () => { clearTimeout(timer); done(() => reject(new Error('turnstile timeout'))) },
@@ -76,6 +76,20 @@ function getTurnstileToken(): Promise<string> {
       done(() => reject(e as Error))
     }
   })
+}
+
+async function establishTrustedSession(): Promise<void> {
+  const turnstileToken = await getTurnstileToken()
+  const res = await fetch(`${API_BASE}/session`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ turnstileToken }),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as Partial<ErrorResponse>
+    throw new Error(data.message || '人机验证未通过，请重试')
+  }
 }
 
 // --- Theme helpers ---
@@ -191,7 +205,7 @@ export default function App() {
 
   async function fetchQuota() {
     try {
-      const res = await fetch(`${API_BASE}/quota${TEST_PARAM}`)
+      const res = await fetch(`${API_BASE}/quota${TEST_PARAM}`, { credentials: 'include' })
       if (res.ok) {
         const data: QuotaResponse = await res.json()
         setRemaining(data.remaining)
@@ -394,18 +408,21 @@ export default function App() {
     cleanup()
 
     try {
-      let turnstileToken = ''
-      try {
-        turnstileToken = await getTurnstileToken()
-      } catch (e) {
-        console.warn('turnstile unavailable, calling without token:', e)
-      }
-
-      const res = await fetch(`${API_BASE}/generate${TEST_PARAM}`, {
+      const sendGenerate = () => fetch(`${API_BASE}/generate${TEST_PARAM}`, {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ description: trimmed, turnstileToken }),
+        body: JSON.stringify({ description: trimmed }),
       })
+
+      let res = await sendGenerate()
+      if (res.status === 401 && !TEST_PARAM) {
+        const data = await res.clone().json().catch(() => ({})) as Partial<ErrorResponse>
+        if (data.error === 'verification_required') {
+          await establishTrustedSession()
+          res = await sendGenerate() // one retry only
+        }
+      }
 
       if (res.status === 429) {
         const data: ErrorResponse = await res.json()
