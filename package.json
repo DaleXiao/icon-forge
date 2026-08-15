@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build && npm run check:dist",
     "check:dist": "node scripts/assert-production-dist.mjs",
+    "test:sessions": "node scripts/verify-session-frontend.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
