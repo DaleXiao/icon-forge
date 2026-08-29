@@ -534,7 +534,10 @@ async function synthesizePrompts(
   const requestBody: PromptChatRequest = {
     model,
     temperature: 0.8,
-    enable_thinking: true,
+    // SPEC-394: thinking OFF — with thinking enabled, heavy prompts on reasoning models
+    // (e.g. qwen3.8-max) exceed the CF edge ~100s budget → 524 before the answer lands.
+    // Same precedent as the design project's planner. Do not re-enable without a latency budget.
+    enable_thinking: false,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: description },
@@ -627,7 +630,7 @@ async function critiqueAndFix(
   const requestBody: PromptChatRequest = {
     model: CRITIQUE_MODEL,
     temperature: 0.2,
-    enable_thinking: true,
+    enable_thinking: false, // SPEC-394: same CF-edge 100s budget as synthesizePrompts — keep off
     messages: [
       { role: "system", content: SYSTEM_PROMPT_CRITIQUE },
       {
