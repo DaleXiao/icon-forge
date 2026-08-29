@@ -63,10 +63,10 @@ chk('PROMPT_MODEL is no longer qwen3.6-max-preview (upgraded to 3.7)',
   !/const PROMPT_MODEL\s*=\s*"qwen3\.6-max-preview"/.test(src));
 chk('CRITIQUE_MODEL exported (qwen3.7-max, reuses same model)',
   /const CRITIQUE_MODEL\s*=\s*"qwen3\.7-max"/.test(src));
-chk('synthesizePrompts request body still passes enable_thinking: true',
-  /async function synthesizePrompts[\s\S]*?enable_thinking:\s*true/.test(src));
-chk('critiqueAndFix request body passes enable_thinking: true',
-  /async function critiqueAndFix[\s\S]*?enable_thinking:\s*true/.test(src));
+chk('synthesizePrompts request body passes enable_thinking: false (SPEC-394: CF 100s edge budget)',
+  /async function synthesizePrompts[\s\S]*?enable_thinking:\s*false/.test(src));
+chk('critiqueAndFix request body passes enable_thinking: false (SPEC-394: CF 100s edge budget)',
+  /async function critiqueAndFix[\s\S]*?enable_thinking:\s*false/.test(src));
 
 // ---------- (C) critique reflection wired ----------
 chk('SYSTEM_PROMPT_CRITIQUE constant defined',
