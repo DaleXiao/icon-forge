@@ -76,8 +76,8 @@ const DAILY_LIMIT = 3;
 // paid output globally. Icon Forge generates two images per queued task.
 const TEST_DAILY_IMAGE_LIMIT = 100;
 const TEST_IMAGES_PER_TASK = 2;
-const PROMPT_MODEL = "qwen3.7-max";  // SPEC-235 followup: 3.7 比 3.6-max-preview 快 2.6x 同质量 (offline bench 8/8 pass, 28s vs 73s avg)
-const CRITIQUE_MODEL = "qwen3.7-max"; // critique 同 model
+const PROMPT_MODEL = "qwen3.8-max";  // SPEC-235 followup: 3.7 比 3.6-max-preview 快 2.6x 同质量 (offline bench 8/8 pass, 28s vs 73s avg); 2026-10-21 SPEC-484: 3.7 退役，对齐路由生效值
+const CRITIQUE_MODEL = "qwen3.8-max"; // critique 同 model
 const DASHSCOPE_MODEL = "wan2.7-image-pro";
 // SPEC-160: endpoints 全部走 api-llm.openclawd.co gateway。
 // Gateway 内部透传到 dashscope，上游响应 schema 不变；icon-forge 解析逻辑 0 修改。
